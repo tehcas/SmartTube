@@ -74,6 +74,7 @@ public final class MainActivity extends Activity implements BrowseView {
     private boolean initialSelectionHandled;
     private boolean homeFallbackStarted;
     private int selectedSectionId = -1;
+    private int requestedSectionId = -1;
     private int pendingScrollY;
     private Disposable homeFallbackAction;
 
@@ -203,13 +204,14 @@ public final class MainActivity extends Activity implements BrowseView {
             }
 
             int targetIndex = Math.max(0, Math.min(index, sections.size() - 1));
+            boolean explicitNavigation = requestedSectionId == sections.get(targetIndex).getId();
             if (!initialSelectionHandled) {
                 int homeIndex = findSectionIndex(MediaGroup.TYPE_HOME);
                 if (homeIndex >= 0) {
                     targetIndex = homeIndex;
                 }
                 initialSelectionHandled = true;
-            } else if (selectedSectionId != -1) {
+            } else if (!explicitNavigation && selectedSectionId != -1) {
                 int restoredIndex = findSectionIndex(selectedSectionId);
                 if (restoredIndex >= 0 && visibleGroups.isEmpty()) {
                     targetIndex = restoredIndex;
@@ -217,11 +219,12 @@ public final class MainActivity extends Activity implements BrowseView {
             }
 
             BrowseSection section = sections.get(targetIndex);
+            requestedSectionId = -1;
             disposeHomeFallback();
             homeFallbackStarted = false;
             selectedSectionId = section.getId();
             screenTitle.setText(section.getTitle());
-            screenSubtitle.setText(R.string.real_smarttube_data);
+            screenSubtitle.setText(sectionSubtitle(section.getId()));
             visibleGroups.clear();
             hasContent = false;
             shelvesContainer.removeAllViews();
@@ -290,10 +293,37 @@ public final class MainActivity extends Activity implements BrowseView {
                 }
                 return;
             }
-            showState(data != null ? data.getMessage() : getString(R.string.empty_section),
-                    data != null ? data.getActionText() : null,
-                    data != null ? data::onAction : null);
+            boolean accountBlocked = isLibrarySignInState(data);
+            showState(libraryStateMessage(data),
+                    accountBlocked ? getString(R.string.account_sign_in_m6) : data != null ? data.getActionText() : null,
+                    accountBlocked
+                            ? () -> Toast.makeText(this, R.string.account_sign_in_m6_message, Toast.LENGTH_LONG).show()
+                            : data != null ? data::onAction : null);
         });
+    }
+
+    private String sectionSubtitle(int sectionId) {
+        if (sectionId == MediaGroup.TYPE_SUBSCRIPTIONS) return getString(R.string.subscriptions_subtitle);
+        if (sectionId == MediaGroup.TYPE_HISTORY) return getString(R.string.history_subtitle);
+        if (sectionId == MediaGroup.TYPE_USER_PLAYLISTS) return getString(R.string.playlists_subtitle);
+        return getString(R.string.real_smarttube_data);
+    }
+
+    private String libraryStateMessage(ErrorFragmentData data) {
+        String fallback = data != null ? data.getMessage() : getString(R.string.empty_section);
+        if (!isLibrarySignInState(data)) return fallback;
+        if (selectedSectionId == MediaGroup.TYPE_SUBSCRIPTIONS) return getString(R.string.subscriptions_sign_in_state);
+        if (selectedSectionId == MediaGroup.TYPE_HISTORY) return getString(R.string.history_sign_in_state);
+        if (selectedSectionId == MediaGroup.TYPE_USER_PLAYLISTS) return getString(R.string.playlists_sign_in_state);
+        return fallback;
+    }
+
+    private boolean isLibrarySignInState(ErrorFragmentData data) {
+        boolean librarySection = selectedSectionId == MediaGroup.TYPE_SUBSCRIPTIONS
+                || selectedSectionId == MediaGroup.TYPE_HISTORY
+                || selectedSectionId == MediaGroup.TYPE_USER_PLAYLISTS;
+        return librarySection && data != null
+                && TextUtils.equals(data.getActionText(), getString(R.string.action_signin));
     }
 
     @Override
@@ -471,6 +501,7 @@ public final class MainActivity extends Activity implements BrowseView {
             item.setOnClickListener(view -> {
                 int selectedIndex = findSectionIndex(section.getId());
                 if (selectedIndex >= 0) {
+                    requestedSectionId = section.getId();
                     selectSection(selectedIndex, true);
                 }
             });

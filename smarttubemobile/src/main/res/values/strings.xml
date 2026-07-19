@@ -3,6 +3,14 @@
 
     <string name="open_navigation">Open navigation</string>
     <string name="real_smarttube_data">Loading real SmartTube data</string>
+    <string name="subscriptions_subtitle">Channels and videos you follow</string>
+    <string name="history_subtitle">Your synchronized watch activity</string>
+    <string name="playlists_subtitle">Watch Later and saved playlists</string>
+    <string name="subscriptions_sign_in_state">Sign in to see subscribed channels and their latest videos.</string>
+    <string name="history_sign_in_state">Sign in to view and synchronize your SmartTube watch history.</string>
+    <string name="playlists_sign_in_state">Sign in to open Watch Later and your saved playlists.</string>
+    <string name="account_sign_in_m6">SIGN-IN SETUP — M6</string>
+    <string name="account_sign_in_m6_message">Account sign-in is deliberately tracked for M6. No account action was taken.</string>
     <string name="signed_out_explore_feed">Signed-out discovery • real SmartTube results</string>
     <string name="loading_signed_out_feed">Loading signed-out discovery feed…</string>
     <string name="signed_out_discovery_query" translatable="false">technology</string>
