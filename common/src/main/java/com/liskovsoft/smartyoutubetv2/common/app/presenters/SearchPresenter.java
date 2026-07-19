@@ -275,6 +275,12 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
         return mCurrentVideo;
     }
 
+    /** Mobile-friendly typed result filter without depending on a TV dialog surface. */
+    public void setTypeOptions(int typeOptions) {
+        mTypeOptions = typeOptions;
+        loadSearchResult();
+    }
+
     private void startSearch(String searchText, boolean isVoice, boolean startPlay) {
         mSearchText = searchText;
         mIsVoice = isVoice;

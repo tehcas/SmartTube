@@ -86,6 +86,16 @@
                     android:textSize="13sp" />
             </LinearLayout>
 
+            <ImageButton
+                android:id="@+id/search_button"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/search"
+                android:padding="12dp"
+                android:src="@drawable/ic_search"
+                android:tint="@color/smarttube_text_primary" />
+
             <ProgressBar
                 android:id="@+id/loading_indicator"
                 style="?android:attr/progressBarStyleSmall"

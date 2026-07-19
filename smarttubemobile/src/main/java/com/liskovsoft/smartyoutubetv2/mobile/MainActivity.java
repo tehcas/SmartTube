@@ -144,6 +144,8 @@ public final class MainActivity extends Activity implements BrowseView {
         progressBar = findViewById(R.id.loading_indicator);
         contentScroll = findViewById(R.id.content_scroll);
         menuButton = findViewById(R.id.menu_button);
+        findViewById(R.id.search_button).setOnClickListener(view ->
+                startActivity(new Intent(this, SearchActivity.class)));
     }
 
     private void configureAdaptiveNavigation() {

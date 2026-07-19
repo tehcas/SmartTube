@@ -4,6 +4,7 @@ import androidx.multidex.MultiDexApplication;
 
 import com.liskovsoft.sharedutils.prefs.GlobalPreferences;
 import com.liskovsoft.smartyoutubetv2.common.app.views.BrowseView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.SearchView;
 import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
 
 public final class MobileApplication extends MultiDexApplication {
@@ -16,5 +17,6 @@ public final class MobileApplication extends MultiDexApplication {
         ViewManager viewManager = ViewManager.instance(this);
         viewManager.setRoot(MainActivity.class);
         viewManager.register(BrowseView.class, MainActivity.class);
+        viewManager.register(SearchView.class, SearchActivity.class);
     }
 }

@@ -59,6 +59,10 @@
             android:exported="false"
             android:screenOrientation="unspecified" />
 
+        <activity android:name=".SearchActivity" android:exported="false" />
+        <activity android:name=".ChannelActivity" android:exported="false" />
+        <activity android:name=".CollectionActivity" android:exported="false" />
+
         <activity
             android:name="com.liskovsoft.leanbackassistant.search.SearchableActivity"
             tools:ignore="MissingClass"
