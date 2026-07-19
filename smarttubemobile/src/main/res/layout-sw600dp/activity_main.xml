@@ -1,12 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:baselineAligned="false"
+    android:orientation="horizontal">
+
+    <LinearLayout
+        android:id="@+id/navigation_panel"
+        android:layout_width="232dp"
+        android:layout_height="match_parent"
+        android:background="@color/smarttube_navigation"
+        android:orientation="vertical"
+        android:padding="10dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:gravity="center_vertical"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="@string/app_name"
+            android:textColor="@color/smarttube_text_primary"
+            android:textSize="19sp"
+            android:textStyle="bold" />
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <LinearLayout
+                android:id="@+id/navigation_items"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </ScrollView>
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/app_shell"
-        android:layout_width="match_parent"
+        android:layout_width="0dp"
         android:layout_height="match_parent"
+        android:layout_weight="1"
         android:orientation="vertical">
 
         <LinearLayout
@@ -14,8 +49,8 @@
             android:layout_height="64dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="8dp"
-            android:paddingEnd="14dp">
+            android:paddingStart="12dp"
+            android:paddingEnd="18dp">
 
             <ImageButton
                 android:id="@+id/menu_button"
@@ -23,14 +58,13 @@
                 android:layout_height="48dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="@string/open_navigation"
-                android:padding="12dp"
                 android:src="@drawable/ic_menu"
-                android:tint="@color/smarttube_text_primary" />
+                android:tint="@color/smarttube_text_primary"
+                android:visibility="gone" />
 
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:orientation="vertical">
 
@@ -40,7 +74,7 @@
                     android:layout_height="wrap_content"
                     android:text="@string/app_name"
                     android:textColor="@color/smarttube_text_primary"
-                    android:textSize="22sp"
+                    android:textSize="24sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -49,7 +83,7 @@
                     android:layout_height="wrap_content"
                     android:text="@string/real_smarttube_data"
                     android:textColor="@color/smarttube_text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <ProgressBar
@@ -73,7 +107,7 @@
                 android:clipToPadding="false"
                 android:fillViewport="true"
                 android:paddingTop="8dp"
-                android:paddingBottom="32dp">
+                android:paddingBottom="36dp">
 
                 <LinearLayout
                     android:id="@+id/shelves_container"
@@ -88,7 +122,7 @@
                 android:layout_height="match_parent"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:padding="32dp"
+                android:padding="48dp"
                 android:visibility="gone">
 
                 <TextView
@@ -97,7 +131,7 @@
                     android:layout_height="wrap_content"
                     android:gravity="center"
                     android:textColor="@color/smarttube_text_secondary"
-                    android:textSize="17sp" />
+                    android:textSize="18sp" />
 
                 <Button
                     android:id="@+id/state_action"
@@ -110,39 +144,4 @@
             </LinearLayout>
         </FrameLayout>
     </LinearLayout>
-
-    <LinearLayout
-        android:id="@+id/navigation_panel"
-        android:layout_width="288dp"
-        android:layout_height="match_parent"
-        android:layout_gravity="start"
-        android:background="@color/smarttube_navigation"
-        android:elevation="16dp"
-        android:orientation="vertical"
-        android:padding="10dp"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="64dp"
-            android:gravity="center_vertical"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:text="@string/app_name"
-            android:textColor="@color/smarttube_text_primary"
-            android:textSize="20sp"
-            android:textStyle="bold" />
-
-        <ScrollView
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1">
-
-            <LinearLayout
-                android:id="@+id/navigation_items"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical" />
-        </ScrollView>
-    </LinearLayout>
-</FrameLayout>
+</LinearLayout>

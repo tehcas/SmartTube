@@ -1,7 +1,33 @@
 <resources>
     <string name="app_name">SmartTube Mobile</string>
-    <string name="foundation_message">Touch-first Android foundation</string>
-    <string name="foundation_status">M1 shell ready • shared SmartTube stack linked • TV preserved</string>
-    <string name="verify_touch">Verify touch input</string>
-    <string name="touch_verified">Touch input verified. Mobile shell is responsive.</string>
+
+    <string name="open_navigation">Open navigation</string>
+    <string name="real_smarttube_data">Loading real SmartTube data</string>
+    <string name="signed_out_explore_feed">Signed-out discovery • real SmartTube results</string>
+    <string name="loading_signed_out_feed">Loading signed-out discovery feed…</string>
+    <string name="signed_out_discovery_query" translatable="false">technology</string>
+    <string name="load_failed">Could not load SmartTube data: %1$s</string>
+    <string name="loading_section">Loading %1$s…</string>
+    <string name="empty_section">Nothing is available in this section yet.</string>
+    <string name="retry">Retry</string>
+    <string name="recommended">Recommended</string>
+    <string name="untitled_video">Untitled video</string>
+    <string name="navigate_to_section">Open %1$s</string>
+    <string name="more_actions_for">More actions for %1$s</string>
+    <string name="open_watch_route">Open watch page</string>
+    <string name="copy_video_link">Copy video link</string>
+    <string name="video_link">Video link</string>
+    <string name="link_copied">Video link copied</string>
+    <string name="non_video_route_m3">Channel and playlist routes arrive in M3.</string>
+    <string name="section_customization_m8">Section customization is tracked for M8.</string>
+    <string name="shared_video">Shared SmartTube video</string>
+    <string name="smarttube_video">SmartTube video</string>
+    <string name="video_id_value">Video ID: %1$s</string>
+    <string name="video_thumbnail">Video thumbnail</string>
+    <string name="player_foundation_message">This is the real mobile watch route. Service-owned playback and synchronized media controls are introduced in M4.</string>
+    <string name="back">Back</string>
+    <plurals name="loaded_shelves">
+        <item quantity="one">%d shelf loaded from SmartTube</item>
+        <item quantity="other">%d shelves loaded from SmartTube</item>
+    </plurals>
 </resources>
