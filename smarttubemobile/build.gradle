@@ -1,0 +1,48 @@
+apply from: gradle.ext.sharedModulesConstants
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.liskovsoft.smartyoutubetv2.mobile'
+    compileSdkVersion project.properties.compileSdkVersion
+    buildToolsVersion project.properties.buildToolsVersion
+
+    defaultConfig {
+        applicationId 'org.smarttube.mobile'
+        minSdkVersion 21
+        targetSdkVersion project.properties.compileSdkVersion
+        versionCode 1
+        versionName '0.1.0'
+
+        missingDimensionStrategy 'default', 'ststable'
+        multiDexEnabled true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    lintOptions {
+        abortOnError true
+        disable 'MissingTranslation'
+    }
+}
+
+dependencies {
+    implementation project(':common')
+    implementation project(':sharedutils')
+    implementation project(':mediaserviceinterfaces')
+    implementation project(':youtubeapi')
+    implementation 'androidx.multidex:multidex:' + multiDexVersion
+}

@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.SmartTube.Mobile" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/smarttube_background</item>
+        <item name="android:statusBarColor">@color/smarttube_background</item>
+        <item name="android:navigationBarColor">@color/smarttube_background</item>
+        <item name="android:colorAccent">@color/smarttube_accent</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

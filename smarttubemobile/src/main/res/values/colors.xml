@@ -1,0 +1,7 @@
+<resources>
+    <color name="smarttube_background">#0A0A0A</color>
+
+    <color name="smarttube_accent">#E62117</color>
+    <color name="smarttube_text_primary">#FFFFFF</color>
+    <color name="smarttube_text_secondary">#B8B8B8</color>
+</resources>

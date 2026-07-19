@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">SmartTube Mobile</string>
+    <string name="foundation_message">Touch-first Android foundation</string>
+    <string name="foundation_status">M1 shell ready • shared SmartTube stack linked • TV preserved</string>
+    <string name="verify_touch">Verify touch input</string>
+    <string name="touch_verified">Touch input verified. Mobile shell is responsive.</string>
+</resources>

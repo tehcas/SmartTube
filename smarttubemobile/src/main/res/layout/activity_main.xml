@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="32dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/app_name"
+        android:textColor="@color/smarttube_text_primary"
+        android:textSize="34sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
+        android:text="@string/foundation_message"
+        android:textColor="@color/smarttube_text_secondary"
+        android:textSize="18sp" />
+
+    <TextView
+        android:id="@+id/mobile_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="28dp"
+        android:text="@string/foundation_status"
+        android:textColor="@color/smarttube_text_primary"
+        android:textSize="16sp" />
+
+    <Button
+        android:id="@+id/verify_touch"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:backgroundTint="@color/smarttube_accent"
+        android:minHeight="48dp"
+        android:paddingLeft="28dp"
+        android:paddingRight="28dp"
+        android:text="@string/verify_touch"
+        android:textAllCaps="false"
+        android:textColor="@android:color/white" />
+</LinearLayout>
