@@ -34,6 +34,33 @@
     <string name="display_fit_height">Fit height</string>
     <string name="display_zoom">Zoom</string>
     <string name="display_stretch">Stretch</string>
+    <string name="video_transform">Rotate and mirror</string>
+    <string name="rotate_degrees">Rotate %1$d°</string>
+    <string name="mirror_horizontal_on">Mirror horizontally: On</string>
+    <string name="mirror_horizontal_off">Mirror horizontally: Off</string>
+    <string name="comments_and_chat">Comments / live chat</string>
+    <string name="customize_controls">Customize player controls</string>
+    <string name="control_quality">Quality</string>
+    <string name="control_speed">Speed</string>
+    <string name="control_captions">Captions</string>
+    <string name="control_chapters">Chapters</string>
+    <string name="control_pip">Picture-in-picture</string>
+    <string name="control_queue">Queue position</string>
+    <string name="comments_unavailable_provider">Comments and live chat are unavailable because the active SmartTube provider supplied no comments or live-chat key for this video.</string>
+
+    <string name="open_comments">Open comments</string>
+    <string name="open_live_chat">Open live chat</string>
+    <string name="live_chat_connecting">Connecting to live chat…</string>
+    <string name="live_chat_error">Live chat closed: %1$s</string>
+    <string name="comments_loading">Loading comments…</string>
+    <string name="comments_load_more">Load more comments</string>
+    <string name="comments_empty">No comments were returned by the provider.</string>
+    <string name="comments_error">Comments could not be loaded: %1$s</string>
+    <string name="comments_title">Comments — %1$s</string>
+    <string name="comment_header">%1$s • %2$s • ♥ %3$s%4$s</string>
+    <string name="state_yes">Yes</string>
+    <string name="state_no">No</string>
+    <string name="video_transform_information">Display: %1$s\nRotation: %2$d°\nMirrored: %3$s\nComments key: %4$s\nLive chat key: %5$s</string>
     <string name="sleep_timer">Sleep timer</string>
     <string name="sleep_timer_off">Off</string>
     <plurals name="sleep_timer_minutes">
@@ -90,6 +117,9 @@
     <string name="picture_in_picture_short">PiP</string>
     <string name="picture_in_picture_unavailable">Picture-in-picture is unavailable on this device</string>
     <string name="playback_queue">SmartTube playback queue</string>
+    <string name="related_videos">Related videos</string>
+    <string name="related_videos_empty">The provider returned no related videos for this item.</string>
+
     <string name="queue_position">Queue %1$d of %2$d</string>
     <string name="playback_progress">Playback progress</string>
     <string name="playback_position">%1$s / %2$s</string>

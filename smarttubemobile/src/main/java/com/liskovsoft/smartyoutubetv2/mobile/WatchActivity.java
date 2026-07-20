@@ -11,6 +11,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.content.res.Configuration;
@@ -42,8 +43,14 @@ import com.bumptech.glide.Glide;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.transition.Transition;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemStoryboard;
+import com.liskovsoft.mediaserviceinterfaces.data.CommentGroup;
+import com.liskovsoft.mediaserviceinterfaces.data.CommentItem;
+import com.liskovsoft.mediaserviceinterfaces.data.ChatItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
+
+import io.reactivex.disposables.Disposable;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -93,6 +100,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private long pendingStoryboardPositionMs;
     private int seekIncrementMs;
     private int normalPlayerContainerHeight;
+    private Disposable commentsAction;
+    private Disposable liveChatAction;
+    private AlertDialog liveChatDialog;
+    private final List<String> liveChatLines = new ArrayList<>();
+    private SharedPreferences controlPreferences;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable hideStoryboard = () -> storyboardPreview.setVisibility(View.GONE);
     private final Runnable hideControls = () -> {
@@ -145,8 +157,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         isLandscape = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
         applySystemUi();
         setContentView(R.layout.activity_watch);
+        controlPreferences = getSharedPreferences("mobile_player_controls", MODE_PRIVATE);
         bindViews();
         playerView.setResizeMode(PlayerData.instance(this).getResizeMode());
+        applyVideoTransform();
+        applyControlVisibility();
         bindActions();
         renderIntent(getIntent());
         requestNotificationPermissionIfNeeded();
@@ -336,7 +351,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 getString(R.string.share_video),
                 getString(R.string.video_information),
                 getString(R.string.display_mode),
-                getString(R.string.sleep_timer)
+                getString(R.string.video_transform),
+                getString(R.string.sleep_timer),
+                getString(R.string.comments_and_chat),
+                getString(R.string.customize_controls),
+                getString(R.string.related_videos)
         };
         new AlertDialog.Builder(this)
                 .setTitle(R.string.player_actions)
@@ -347,7 +366,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                         case 2: shareCurrentLink(); break;
                         case 3: showVideoInformationDialog(); break;
                         case 4: showDisplayModeDialog(); break;
-                        case 5: showSleepTimerDialog(); break;
+                        case 5: showVideoTransformDialog(); break;
+                        case 6: showSleepTimerDialog(); break;
+                        case 7: showCommentsCapabilityDialog(); break;
+                        case 8: showCustomizeControlsDialog(); break;
+                        case 9: showSuggestionsDialog(); break;
                         default: break;
                     }
                 })
@@ -370,6 +393,32 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                     playbackService.selectQueueItem(which);
                     dialog.dismiss();
                 })
+                .show();
+    }
+
+    private void showSuggestionsDialog() {
+        if (playbackService == null) return;
+        List<MobilePlaybackService.SuggestionOption> suggestions = playbackService.getSuggestions();
+        if (suggestions.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.related_videos)
+                    .setMessage(R.string.related_videos_empty)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        String[] labels = new String[suggestions.size()];
+        for (int i = 0; i < suggestions.size(); i++) {
+            MobilePlaybackService.SuggestionOption item = suggestions.get(i);
+            List<String> details = new ArrayList<>();
+            if (!TextUtils.isEmpty(item.author)) details.add(item.author);
+            if (!TextUtils.isEmpty(item.section)) details.add(item.section);
+            labels[i] = fallback(item.title)
+                    + (details.isEmpty() ? "" : "\n" + TextUtils.join(" • ", details));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.related_videos)
+                .setItems(labels, (dialog, which) -> playbackService.selectSuggestion(which))
                 .show();
     }
 
@@ -404,6 +453,12 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 formatTime(playbackService.getPositionMs()), formatTime(playbackService.getDurationMs()),
                 playbackService.getQueueIndex() + 1, playbackService.getQueueSize(),
                 quality, formatSpeed(playbackService.getPlaybackSpeed()), captions);
+        PlayerData data = PlayerData.instance(this);
+        message += "\n\n" + getString(R.string.video_transform_information,
+                displayModeLabel(data.getResizeMode()), data.getRotationAngle(),
+                getString(data.isVideoFlipEnabled() ? R.string.state_yes : R.string.state_no),
+                TextUtils.isEmpty(playbackService.getCommentsKey()) ? "none" : "available",
+                TextUtils.isEmpty(playbackService.getLiveChatKey()) ? "none" : "available");
         new AlertDialog.Builder(this)
                 .setTitle(R.string.video_information)
                 .setMessage(message)
@@ -439,6 +494,198 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                     dialog.dismiss();
                 })
                 .show();
+    }
+
+    private void showVideoTransformDialog() {
+        PlayerData data = PlayerData.instance(this);
+        int[] rotations = { 0, 90, 180, 270 };
+        String[] labels = new String[rotations.length + 1];
+        for (int i = 0; i < rotations.length; i++) {
+            labels[i] = getString(R.string.rotate_degrees, rotations[i]);
+        }
+        labels[rotations.length] = getString(data.isVideoFlipEnabled()
+                ? R.string.mirror_horizontal_on : R.string.mirror_horizontal_off);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.video_transform)
+                .setItems(labels, (dialog, which) -> {
+                    if (which < rotations.length) data.setRotationAngle(rotations[which]);
+                    else data.setVideoFlipEnabled(!data.isVideoFlipEnabled());
+                    applyVideoTransform();
+                })
+                .show();
+    }
+
+    private void applyVideoTransform() {
+        View surface = playerView.getVideoSurfaceView();
+        if (surface == null) return;
+        PlayerData data = PlayerData.instance(this);
+        surface.setRotation(data.getRotationAngle());
+        surface.setScaleX(data.isVideoFlipEnabled() ? -1f : 1f);
+        surface.setScaleY(1f);
+    }
+
+    private void showCustomizeControlsDialog() {
+        String[] keys = { "quality", "speed", "captions", "chapters", "pip", "queue" };
+        String[] labels = {
+                getString(R.string.control_quality), getString(R.string.control_speed),
+                getString(R.string.control_captions), getString(R.string.control_chapters),
+                getString(R.string.control_pip), getString(R.string.control_queue)
+        };
+        boolean[] checked = new boolean[keys.length];
+        for (int i = 0; i < keys.length; i++) checked[i] = controlPreferences.getBoolean(keys[i], true);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.customize_controls)
+                .setMultiChoiceItems(labels, checked, (dialog, which, enabled) -> {
+                    controlPreferences.edit().putBoolean(keys[which], enabled).apply();
+                    applyControlVisibility();
+                })
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void applyControlVisibility() {
+        if (controlPreferences == null) return;
+        qualityButton.setVisibility(controlPreferences.getBoolean("quality", true) ? View.VISIBLE : View.GONE);
+        speedButton.setVisibility(controlPreferences.getBoolean("speed", true) ? View.VISIBLE : View.GONE);
+        captionsButton.setVisibility(controlPreferences.getBoolean("captions", true) ? View.VISIBLE : View.GONE);
+        chaptersButton.setVisibility(controlPreferences.getBoolean("chapters", true) ? View.VISIBLE : View.GONE);
+        pipButton.setVisibility(controlPreferences.getBoolean("pip", true) ? View.VISIBLE : View.GONE);
+        queueView.setVisibility(controlPreferences.getBoolean("queue", true) ? View.VISIBLE : View.GONE);
+        boolean pipAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                && getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+        pipButton.setEnabled(pipAvailable);
+    }
+
+    private void showCommentsCapabilityDialog() {
+        if (playbackService == null) return;
+        String commentsKey = playbackService.getCommentsKey();
+        String liveChatKey = playbackService.getLiveChatKey();
+        boolean comments = !TextUtils.isEmpty(commentsKey);
+        boolean liveChat = !TextUtils.isEmpty(liveChatKey);
+        Video video = playbackService.getCurrentVideo();
+        String title = video != null ? video.getTitle() : getString(R.string.comments_and_chat);
+        if (comments && liveChat) {
+            String[] choices = { getString(R.string.open_comments), getString(R.string.open_live_chat) };
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.comments_and_chat)
+                    .setItems(choices, (dialog, which) -> {
+                        if (which == 0) loadComments(commentsKey, title, new ArrayList<>());
+                        else openLiveChat(liveChatKey);
+                    })
+                    .show();
+        } else if (comments) {
+            loadComments(commentsKey, title, new ArrayList<>());
+        } else if (liveChat) {
+            openLiveChat(liveChatKey);
+        } else {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.comments_and_chat)
+                    .setMessage(R.string.comments_unavailable_provider)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+        }
+    }
+
+    private void openLiveChat(String key) {
+        if (TextUtils.isEmpty(key)) return;
+        if (liveChatAction != null) liveChatAction.dispose();
+        liveChatLines.clear();
+        PlayerData.instance(this).setLiveChatEnabled(true);
+        liveChatDialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.open_live_chat)
+                .setMessage(R.string.live_chat_connecting)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        liveChatDialog.setOnDismissListener(dialog -> {
+            if (liveChatAction != null) liveChatAction.dispose();
+            liveChatAction = null;
+            PlayerData.instance(this).setLiveChatEnabled(false);
+        });
+        liveChatDialog.show();
+        liveChatAction = YouTubeServiceManager.instance().getLiveChatService()
+                .openLiveChatObserve(key)
+                .subscribe(item -> runOnUiThread(() -> appendLiveChatItem(item)),
+                        error -> runOnUiThread(() -> {
+                            if (liveChatDialog != null && liveChatDialog.isShowing()) {
+                                liveChatDialog.setMessage(getString(R.string.live_chat_error,
+                                        TextUtils.isEmpty(error.getMessage())
+                                                ? error.getClass().getSimpleName() : error.getMessage()));
+                            }
+                        }));
+    }
+
+    private void appendLiveChatItem(ChatItem item) {
+        if (item == null || TextUtils.isEmpty(item.getAuthorName()) || TextUtils.isEmpty(item.getMessage())) return;
+        liveChatLines.add(item.getAuthorName() + ": " + item.getMessage().trim());
+        while (liveChatLines.size() > 30) liveChatLines.remove(0);
+        if (liveChatDialog != null && liveChatDialog.isShowing()) {
+            liveChatDialog.setMessage(TextUtils.join("\n\n", liveChatLines));
+        }
+    }
+
+    private void loadComments(String key, String title, List<CommentItem> existing) {
+        if (TextUtils.isEmpty(key)) return;
+        if (commentsAction != null) commentsAction.dispose();
+        Toast.makeText(this, R.string.comments_loading, Toast.LENGTH_SHORT).show();
+        commentsAction = YouTubeServiceManager.instance().getCommentsService()
+                .getCommentsObserve(key)
+                .subscribe(group -> runOnUiThread(() -> showCommentsGroup(group, title, existing)),
+                        error -> runOnUiThread(() -> Toast.makeText(this,
+                                getString(R.string.comments_error,
+                                        TextUtils.isEmpty(error.getMessage())
+                                                ? error.getClass().getSimpleName() : error.getMessage()),
+                                Toast.LENGTH_LONG).show()));
+    }
+
+    private void showCommentsGroup(CommentGroup group, String title, List<CommentItem> existing) {
+        if (group == null || group.getComments() == null) {
+            new AlertDialog.Builder(this)
+                    .setTitle(getString(R.string.comments_title, title))
+                    .setMessage(R.string.comments_empty)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        List<CommentItem> comments = new ArrayList<>(existing);
+        for (CommentItem item : group.getComments()) {
+            if (item != null && !item.isEmpty()) comments.add(item);
+        }
+        String nextKey = group.getNextCommentsKey();
+        int extra = TextUtils.isEmpty(nextKey) ? 0 : 1;
+        String[] labels = new String[comments.size() + extra];
+        for (int i = 0; i < comments.size(); i++) {
+            CommentItem item = comments.get(i);
+            String replies = item.getReplyCount();
+            String header = getString(R.string.comment_header,
+                    fallback(item.getAuthorName()), fallback(item.getPublishedDate()),
+                    fallback(item.getLikeCount()), TextUtils.isEmpty(replies) ? "" : " • " + replies);
+            labels[i] = header + "\n" + trimComment(item.getMessage());
+        }
+        if (extra == 1) labels[labels.length - 1] = getString(R.string.comments_load_more);
+        new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.comments_title, title))
+                .setItems(labels, (dialog, which) -> {
+                    if (which == comments.size()) {
+                        loadComments(nextKey, title, comments);
+                        return;
+                    }
+                    CommentItem item = comments.get(which);
+                    if (!TextUtils.isEmpty(item.getNestedCommentsKey())) {
+                        loadComments(item.getNestedCommentsKey(),
+                                fallback(item.getAuthorName()), new ArrayList<>());
+                    }
+                })
+                .show();
+    }
+
+    private static String fallback(String value) {
+        return TextUtils.isEmpty(value) ? "—" : value;
+    }
+
+    private static String trimComment(String value) {
+        if (TextUtils.isEmpty(value)) return "";
+        String normalized = value.trim().replaceAll("\\s+", " ");
+        return normalized.length() > 260 ? normalized.substring(0, 257) + "…" : normalized;
     }
 
     private void showSleepTimerDialog() {
@@ -748,6 +995,13 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
 
     @Override
     protected void onDestroy() {
+        if (commentsAction != null) commentsAction.dispose();
+        boolean hadLiveChat = liveChatAction != null;
+        if (liveChatAction != null) liveChatAction.dispose();
+        liveChatAction = null;
+        if (liveChatDialog != null) liveChatDialog.setOnDismissListener(null);
+        liveChatDialog = null;
+        if (hadLiveChat) PlayerData.instance(this).setLiveChatEnabled(false);
         if (storyboardTarget != null) Glide.with(this).clear(storyboardTarget);
         storyboardTarget = null;
         loadedStoryboardBitmap = null;
@@ -848,6 +1102,14 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         String shortLabel = separator > 0 ? label.substring(0, separator) : label;
         int presetSuffix = shortLabel.indexOf(") ");
         return presetSuffix >= 0 ? shortLabel.substring(presetSuffix + 2) : shortLabel;
+    }
+
+    private String displayModeLabel(int mode) {
+        if (mode == PlayerData.RESIZE_MODE_FIT_WIDTH) return getString(R.string.display_fit_width);
+        if (mode == PlayerData.RESIZE_MODE_FIT_HEIGHT) return getString(R.string.display_fit_height);
+        if (mode == PlayerData.RESIZE_MODE_FIT_BOTH) return getString(R.string.display_zoom);
+        if (mode == PlayerData.RESIZE_MODE_STRETCH) return getString(R.string.display_stretch);
+        return getString(R.string.display_fit);
     }
 
     private static String formatSpeed(float speed) {

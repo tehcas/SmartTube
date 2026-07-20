@@ -40,6 +40,8 @@ import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
 import com.liskovsoft.mediaserviceinterfaces.data.ChapterItem;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
+import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
+import com.liskovsoft.mediaserviceinterfaces.data.MediaItem;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemStoryboard;
 import com.liskovsoft.sharedutils.rx.RxHelper;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
@@ -131,6 +133,27 @@ public final class MobilePlaybackService extends Service implements Player.Event
         }
     }
 
+    static final class SuggestionOption {
+        final String section;
+        final String videoId;
+        final String title;
+        final String author;
+        final String image;
+
+        SuggestionOption(String section, MediaItem item) {
+            this.section = section;
+            videoId = item.getVideoId();
+            title = item.getTitle();
+            author = !TextUtils.isEmpty(item.getAuthor()) ? item.getAuthor()
+                    : item.getSecondTitle() != null ? item.getSecondTitle().toString() : null;
+            image = item.getCardImageUrl();
+        }
+
+        QueueEntry toQueueEntry() {
+            return new QueueEntry(videoId, title, author, image);
+        }
+    }
+
     final class LocalBinder extends Binder {
         MobilePlaybackService getService() {
             return MobilePlaybackService.this;
@@ -172,6 +195,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private List<TrackOption> subtitleTrackOptions = Collections.emptyList();
     private MediaItemStoryboard storyboard;
     private List<ChapterOption> chapters = Collections.emptyList();
+    private String commentsKey;
+    private String liveChatKey;
+    private List<SuggestionOption> suggestions = Collections.emptyList();
     private long sleepTimerEndRealtimeMs;
 
     static void load(Context context, Video video) {
@@ -312,6 +338,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
         subtitleTrackOptions = Collections.emptyList();
         storyboard = null;
         chapters = Collections.emptyList();
+        commentsKey = null;
+        liveChatKey = null;
+        suggestions = Collections.emptyList();
         updateSessionMetadata();
         updateForegroundNotification();
         notifyListeners();
@@ -449,8 +478,37 @@ public final class MobilePlaybackService extends Service implements Player.Event
     List<TrackOption> getSubtitleTrackOptions() { return subtitleTrackOptions; }
     @Nullable MediaItemStoryboard getStoryboard() { return storyboard; }
     List<ChapterOption> getChapters() { return chapters; }
+    @Nullable String getCommentsKey() { return commentsKey; }
+    @Nullable String getLiveChatKey() { return liveChatKey; }
+    List<SuggestionOption> getSuggestions() { return suggestions; }
+
+    void selectSuggestion(int index) {
+        if (index < 0 || index >= suggestions.size()) return;
+        queue.clear();
+        for (SuggestionOption option : suggestions) queue.add(option.toQueueEntry());
+        queueIndex = index;
+        updateSessionQueue();
+        loadQueueIndex(index, false);
+    }
 
     private void onMetadataLoaded(MediaItemMetadata metadata) {
+        commentsKey = metadata.getCommentsKey();
+        liveChatKey = metadata.getLiveChatKey();
+        List<SuggestionOption> suggestionResult = new ArrayList<>();
+        List<MediaGroup> suggestionGroups = metadata.getSuggestions();
+        if (suggestionGroups != null) {
+            for (MediaGroup group : suggestionGroups) {
+                if (group == null || group.getMediaItems() == null) continue;
+                for (MediaItem item : group.getMediaItems()) {
+                    if (item != null && item.getType() == MediaItem.TYPE_VIDEO
+                            && !TextUtils.isEmpty(item.getVideoId())
+                            && (currentVideo == null || !TextUtils.equals(item.getVideoId(), currentVideo.videoId))) {
+                        suggestionResult.add(new SuggestionOption(group.getTitle(), item));
+                    }
+                }
+            }
+        }
+        suggestions = suggestionResult;
         List<ChapterOption> result = new ArrayList<>();
         List<ChapterItem> serviceChapters = metadata.getChapters();
         if (serviceChapters != null) {
