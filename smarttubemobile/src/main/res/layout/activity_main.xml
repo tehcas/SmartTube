@@ -53,6 +53,16 @@
             </LinearLayout>
 
             <ImageButton
+                android:id="@+id/account_button"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/account"
+                android:padding="12dp"
+                android:src="@drawable/ic_account"
+                android:tint="@color/smarttube_text_primary" />
+
+            <ImageButton
                 android:id="@+id/search_button"
                 android:layout_width="48dp"
                 android:layout_height="48dp"

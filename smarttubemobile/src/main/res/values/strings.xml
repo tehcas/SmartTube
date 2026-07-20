@@ -9,8 +9,20 @@
     <string name="subscriptions_sign_in_state">Sign in to see subscribed channels and their latest videos.</string>
     <string name="history_sign_in_state">Sign in to view and synchronize your SmartTube watch history.</string>
     <string name="playlists_sign_in_state">Sign in to open Watch Later and your saved playlists.</string>
-    <string name="account_sign_in_m6">SIGN-IN SETUP — M6</string>
-    <string name="account_sign_in_m6_message">Account sign-in is deliberately tracked for M6. No account action was taken.</string>
+    <string name="account_sign_in_m6">Sign in</string>
+    <string name="account">Account</string>
+
+    <string name="sign_in_youtube">Sign in to YouTube</string>
+    <string name="add_account">Add another account</string>
+    <string name="use_without_account">Use without an account</string>
+
+    <string name="account_name_email">%1$s\n%2$s</string>
+    <string name="requesting_sign_in_code">Requesting a secure YouTube device code…</string>
+    <string name="activate_account_title">Activate YouTube account</string>
+    <string name="activate_account_message">On another device, open %1$s and enter code:\n\n%2$s</string>
+    <string name="sign_in_error">Sign-in failed: %1$s</string>
+    <string name="sign_in_complete">YouTube account connected</string>
+
     <string name="signed_out_explore_feed">Signed-out discovery • real SmartTube results</string>
     <string name="loading_signed_out_feed">Loading signed-out discovery feed…</string>
     <string name="signed_out_discovery_query" translatable="false">technology</string>
@@ -49,6 +61,22 @@
     <string name="mirror_horizontal_on">Mirror horizontally: On</string>
     <string name="mirror_horizontal_off">Mirror horizontally: Off</string>
     <string name="comments_and_chat">Comments / live chat</string>
+    <string name="account_actions">Authenticated actions</string>
+    <string name="like_video">Like video</string>
+    <string name="remove_like">Remove like</string>
+    <string name="subscribe_channel">Subscribe to channel</string>
+    <string name="unsubscribe_channel">Unsubscribe from channel</string>
+
+    <string name="save_to_playlist">Save to playlist…</string>
+    <string name="playlist_selected">✓ %1$s</string>
+    <string name="playlist_not_selected">＋ %1$s</string>
+    <string name="add_to_named_playlist">Add to %1$s</string>
+    <string name="remove_from_named_playlist">Remove from %1$s</string>
+    <string name="loading_account_state">Reading authenticated provider state…</string>
+    <string name="account_required">Sign in from the Account button on Home before using authenticated actions.</string>
+    <string name="mutation_in_progress">Applying %1$s…</string>
+    <string name="mutation_readback_confirmed">Provider readback confirmed: %1$s</string>
+    <string name="mutation_readback_failed">Provider readback failed for %1$s: %2$s</string>
     <string name="customize_controls">Customize player controls</string>
     <string name="control_quality">Quality</string>
     <string name="control_speed">Speed</string>

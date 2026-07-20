@@ -49,6 +49,9 @@ import com.bumptech.glide.Glide;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.transition.Transition;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemStoryboard;
+import com.liskovsoft.mediaserviceinterfaces.MediaItemService;
+import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
+import com.liskovsoft.mediaserviceinterfaces.data.PlaylistInfo;
 import com.liskovsoft.mediaserviceinterfaces.data.CommentGroup;
 import com.liskovsoft.mediaserviceinterfaces.data.CommentItem;
 import com.liskovsoft.mediaserviceinterfaces.data.ChatItem;
@@ -57,6 +60,7 @@ import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import io.reactivex.disposables.Disposable;
+import io.reactivex.Observable;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -74,6 +78,9 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
             "quality", "speed", "captions", "chapters", "pip"
     };
     private static final String DEFAULT_CONTROL_ORDER = "quality,speed,captions,chapters,pip";
+    private static final int READBACK_LIKE = 1;
+    private static final int READBACK_SUBSCRIPTION = 2;
+    private static final int READBACK_PLAYLIST = 3;
 
     private PlayerView playerView;
     private TextView titleView;
@@ -114,6 +121,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private int normalPlayerContainerHeight;
     private Disposable commentsAction;
     private Disposable liveChatAction;
+    private Disposable accountAction;
+    private AlertDialog accountProgressDialog;
     private AlertDialog liveChatDialog;
     private final List<String> liveChatLines = new ArrayList<>();
     private SharedPreferences controlPreferences;
@@ -369,7 +378,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 getString(R.string.customize_controls),
                 getString(R.string.related_videos),
                 getString(R.string.video_qr_code),
-                getString(R.string.debug_statistics)
+                getString(R.string.debug_statistics),
+                getString(R.string.account_actions)
         };
         new AlertDialog.Builder(this)
                 .setTitle(R.string.player_actions)
@@ -387,6 +397,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                         case 9: showSuggestionsDialog(); break;
                         case 10: showQrCodeDialog(); break;
                         case 11: showDebugStatisticsDialog(); break;
+                        case 12: showAuthenticatedActionsDialog(); break;
                         default: break;
                     }
                 })
@@ -502,6 +513,188 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         new AlertDialog.Builder(this)
                 .setTitle(R.string.debug_statistics)
                 .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showAuthenticatedActionsDialog() {
+        if (playbackService == null) return;
+        if (!YouTubeServiceManager.instance().getSignInService().isSigned()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.account_actions)
+                    .setMessage(R.string.account_required)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        Video video = playbackService.getCurrentVideo();
+        if (video == null || TextUtils.isEmpty(video.videoId)) return;
+        showAccountProgress(getString(R.string.loading_account_state));
+        if (accountAction != null) accountAction.dispose();
+        accountAction = YouTubeServiceManager.instance().getMediaItemService()
+                .getPlaylistsInfoObserve(video.videoId)
+                .subscribe(playlists -> runOnUiThread(() -> renderAuthenticatedActions(video, playlists)),
+                        error -> runOnUiThread(() -> showMutationFailure(
+                                getString(R.string.account_actions), error)));
+    }
+
+    private void renderAuthenticatedActions(Video video, List<PlaylistInfo> playlists) {
+        dismissAccountProgress();
+        boolean liked = playbackService.getLikeStatus() == MediaItemMetadata.LIKE_STATUS_LIKE;
+        boolean subscribed = playbackService.isSubscribed();
+        String[] choices = {
+                getString(liked ? R.string.remove_like : R.string.like_video),
+                getString(subscribed ? R.string.unsubscribe_channel : R.string.subscribe_channel),
+                getString(R.string.save_to_playlist)
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.account_actions)
+                .setItems(choices, (dialog, which) -> {
+                    MediaItemService service = YouTubeServiceManager.instance().getMediaItemService();
+                    if (which == 0) {
+                        Observable<Void> action = liked ? service.removeLikeObserve(video.toMediaItem())
+                                : service.setLikeObserve(video.toMediaItem());
+                        runAuthenticatedMutation(choices[0], action, READBACK_LIKE,
+                                liked ? MediaItemMetadata.LIKE_STATUS_INDIFFERENT : MediaItemMetadata.LIKE_STATUS_LIKE,
+                                null, video.videoId);
+                    } else if (which == 1) {
+                        String channelId = playbackService.getChannelId();
+                        if (TextUtils.isEmpty(channelId)) {
+                            showMutationFailure(choices[1], new IllegalStateException("Channel ID unavailable"));
+                            return;
+                        }
+                        Observable<Void> action = subscribed ? service.unsubscribeObserve(channelId)
+                                : service.subscribeObserve(channelId);
+                        runAuthenticatedMutation(choices[1], action, READBACK_SUBSCRIPTION,
+                                subscribed ? 0 : 1, null, video.videoId);
+                    } else {
+                        showPlaylistActions(video, playlists);
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showPlaylistActions(Video video, List<PlaylistInfo> playlists) {
+        if (playlists == null || playlists.isEmpty()) {
+            showMutationFailure(getString(R.string.save_to_playlist),
+                    new IllegalStateException("No editable playlists available"));
+            return;
+        }
+        String[] labels = new String[playlists.size()];
+        for (int i = 0; i < playlists.size(); i++) {
+            PlaylistInfo playlist = playlists.get(i);
+            labels[i] = getString(playlist.isSelected()
+                            ? R.string.playlist_selected : R.string.playlist_not_selected,
+                    playlist.getTitle());
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.save_to_playlist)
+                .setItems(labels, (dialog, which) -> {
+                    PlaylistInfo playlist = playlists.get(which);
+                    boolean saved = playlist.isSelected();
+                    String actionLabel = getString(saved
+                                    ? R.string.remove_from_named_playlist : R.string.add_to_named_playlist,
+                            playlist.getTitle());
+                    MediaItemService service = YouTubeServiceManager.instance().getMediaItemService();
+                    Observable<Void> action = saved
+                            ? service.removeFromPlaylistObserve(playlist.getPlaylistId(), video.videoId)
+                            : service.addToPlaylistObserve(playlist.getPlaylistId(), video.toMediaItem());
+                    runAuthenticatedMutation(actionLabel, action, READBACK_PLAYLIST,
+                            saved ? 0 : 1, playlist.getPlaylistId(), video.videoId);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void runAuthenticatedMutation(String label, Observable<Void> action, int readbackType,
+                                          int expectedState, @Nullable String playlistId, String videoId) {
+        showAccountProgress(getString(R.string.mutation_in_progress, label));
+        if (accountAction != null) accountAction.dispose();
+        accountAction = action.subscribe(ignored -> { },
+                error -> runOnUiThread(() -> showMutationFailure(label, error)),
+                () -> uiHandler.postDelayed(
+                        () -> verifyAuthenticatedMutation(label, readbackType, expectedState, playlistId, videoId, 0),
+                        1_500L));
+    }
+
+    private void verifyAuthenticatedMutation(String label, int readbackType, int expectedState,
+                                             @Nullable String playlistId, String videoId, int attempt) {
+        if (isFinishing() || isDestroyed()) return;
+        MediaItemService service = YouTubeServiceManager.instance().getMediaItemService();
+        if (accountAction != null) accountAction.dispose();
+        if (readbackType == READBACK_PLAYLIST) {
+            accountAction = service.getPlaylistsInfoObserve(videoId).subscribe(playlists -> {
+                PlaylistInfo target = findPlaylist(playlists, playlistId);
+                boolean matched = target != null && target.isSelected() == (expectedState == 1);
+                runOnUiThread(() -> handleMutationReadback(label, readbackType, expectedState,
+                        playlistId, videoId, attempt, matched, null));
+            }, error -> runOnUiThread(() -> handleMutationReadback(label, readbackType, expectedState,
+                    playlistId, videoId, attempt, false, error)));
+        } else {
+            accountAction = service.getMetadataObserve(videoId, null, 0, null).subscribe(metadata -> {
+                boolean matched = readbackType == READBACK_LIKE
+                        ? metadata.getLikeStatus() == expectedState
+                        : metadata.isSubscribed() == (expectedState == 1);
+                if (matched && playbackService != null) playbackService.applyMetadataReadback(metadata);
+                runOnUiThread(() -> handleMutationReadback(label, readbackType, expectedState,
+                        playlistId, videoId, attempt, matched, null));
+            }, error -> runOnUiThread(() -> handleMutationReadback(label, readbackType, expectedState,
+                    playlistId, videoId, attempt, false, error)));
+        }
+    }
+
+    private void handleMutationReadback(String label, int readbackType, int expectedState,
+                                        @Nullable String playlistId, String videoId, int attempt,
+                                        boolean matched, @Nullable Throwable error) {
+        if (matched) {
+            dismissAccountProgress();
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.account_actions)
+                    .setMessage(getString(R.string.mutation_readback_confirmed, label))
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+        } else if (attempt < 12) {
+            uiHandler.postDelayed(() -> verifyAuthenticatedMutation(label, readbackType, expectedState,
+                    playlistId, videoId, attempt + 1), 1_500L);
+        } else {
+            showMutationFailure(label, error != null ? error : new IllegalStateException("State did not change"));
+        }
+    }
+
+    @Nullable
+    private PlaylistInfo findPlaylist(List<PlaylistInfo> playlists, @Nullable String playlistId) {
+        if (playlists == null || TextUtils.isEmpty(playlistId)) return null;
+        for (PlaylistInfo playlist : playlists) {
+            if (playlist != null && TextUtils.equals(playlistId, playlist.getPlaylistId())) return playlist;
+        }
+        return null;
+    }
+
+    private void showAccountProgress(String message) {
+        dismissAccountProgress();
+        accountProgressDialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.account_actions)
+                .setMessage(message)
+                .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
+                    if (accountAction != null) accountAction.dispose();
+                    accountAction = null;
+                })
+                .create();
+        accountProgressDialog.show();
+    }
+
+    private void dismissAccountProgress() {
+        if (accountProgressDialog != null) accountProgressDialog.dismiss();
+        accountProgressDialog = null;
+    }
+
+    private void showMutationFailure(String label, Throwable error) {
+        dismissAccountProgress();
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.account_actions)
+                .setMessage(getString(R.string.mutation_readback_failed, label,
+                        TextUtils.isEmpty(error.getMessage()) ? error.getClass().getSimpleName() : error.getMessage()))
                 .setPositiveButton(android.R.string.ok, null)
                 .show();
     }
@@ -1148,6 +1341,9 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     @Override
     protected void onDestroy() {
         if (commentsAction != null) commentsAction.dispose();
+        if (accountAction != null) accountAction.dispose();
+        accountAction = null;
+        dismissAccountProgress();
         boolean hadLiveChat = liveChatAction != null;
         if (liveChatAction != null) liveChatAction.dispose();
         liveChatAction = null;

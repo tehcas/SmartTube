@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -14,6 +15,7 @@ import android.os.Bundle;
 import android.os.Looper;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.util.TypedValue;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -32,7 +34,13 @@ import androidx.annotation.ColorRes;
 import androidx.core.content.ContextCompat;
 
 import com.bumptech.glide.Glide;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.WriterException;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
+import com.liskovsoft.mediaserviceinterfaces.SignInService;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
+import com.liskovsoft.mediaserviceinterfaces.oauth.Account;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.BrowseSection;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.SettingsGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.SettingsItem;
@@ -41,6 +49,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.errors.ErrorFragmentData;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.BrowsePresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.BrowseView;
+import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import java.util.ArrayList;
@@ -48,7 +57,7 @@ import java.util.List;
 
 import io.reactivex.disposables.Disposable;
 
-public final class MainActivity extends Activity implements BrowseView {
+public final class MainActivity extends Activity implements BrowseView, MediaServiceManager.AccountChangeListener {
     private static final String STATE_SECTION_ID = "mobile_section_id";
     private static final String STATE_SCROLL_Y = "mobile_scroll_y";
     private static final int MAX_CARDS_PER_SHELF = 12;
@@ -68,6 +77,7 @@ public final class MainActivity extends Activity implements BrowseView {
     private ProgressBar progressBar;
     private ScrollView contentScroll;
     private ImageButton menuButton;
+    private ImageButton accountButton;
     private boolean isTablet;
     private boolean progressShowing;
     private boolean hasContent;
@@ -77,6 +87,9 @@ public final class MainActivity extends Activity implements BrowseView {
     private int requestedSectionId = -1;
     private int pendingScrollY;
     private Disposable homeFallbackAction;
+    private Disposable signInAction;
+    private AlertDialog signInDialog;
+    private SignInService signInService;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -96,6 +109,9 @@ public final class MainActivity extends Activity implements BrowseView {
         presenter = BrowsePresenter.instance(this);
         presenter.setView(this);
         presenter.onViewInitialized();
+        signInService = YouTubeServiceManager.instance().getSignInService();
+        MediaServiceManager.instance().addAccountListener(this);
+        updateBadge();
         handleDeepLink(getIntent());
     }
 
@@ -122,6 +138,9 @@ public final class MainActivity extends Activity implements BrowseView {
     @Override
     protected void onDestroy() {
         disposeHomeFallback();
+        if (signInAction != null) signInAction.dispose();
+        if (signInDialog != null) signInDialog.dismiss();
+        MediaServiceManager.instance().removeAccountListener(this);
         presenter.onViewDestroyed();
         super.onDestroy();
     }
@@ -145,6 +164,8 @@ public final class MainActivity extends Activity implements BrowseView {
         progressBar = findViewById(R.id.loading_indicator);
         contentScroll = findViewById(R.id.content_scroll);
         menuButton = findViewById(R.id.menu_button);
+        accountButton = findViewById(R.id.account_button);
+        accountButton.setOnClickListener(view -> showAccountDialog());
         findViewById(R.id.search_button).setOnClickListener(view ->
                 startActivity(new Intent(this, SearchActivity.class)));
     }
@@ -297,7 +318,7 @@ public final class MainActivity extends Activity implements BrowseView {
             showState(libraryStateMessage(data),
                     accountBlocked ? getString(R.string.account_sign_in_m6) : data != null ? data.getActionText() : null,
                     accountBlocked
-                            ? () -> Toast.makeText(this, R.string.account_sign_in_m6_message, Toast.LENGTH_LONG).show()
+                            ? this::showAccountDialog
                             : data != null ? data::onAction : null);
         });
     }
@@ -358,7 +379,114 @@ public final class MainActivity extends Activity implements BrowseView {
 
     @Override
     public void updateBadge() {
-        // Account badge support is tracked for the authenticated M6 surface.
+        if (accountButton == null || signInService == null) return;
+        Account selected = signInService.getSelectedAccount();
+        boolean signed = selected != null;
+        accountButton.setColorFilter(color(signed ? R.color.smarttube_accent : R.color.smarttube_text_primary));
+        accountButton.setContentDescription(signed && !TextUtils.isEmpty(selected.getName())
+                ? getString(R.string.account_name_email, selected.getName(), safeText(selected.getEmail()))
+                : getString(R.string.account));
+    }
+
+    @Override
+    public void onAccountChanged(Account account) {
+        runUi(() -> {
+            updateBadge();
+            if (presenter != null) presenter.refresh();
+        });
+    }
+
+    private void showAccountDialog() {
+        if (signInService == null) return;
+        List<Account> accounts = signInService.getAccounts();
+        if (accounts == null || accounts.isEmpty()) {
+            startDeviceSignIn();
+            return;
+        }
+        String[] labels = new String[accounts.size() + 2];
+        int checked = accounts.size() + 1;
+        for (int i = 0; i < accounts.size(); i++) {
+            Account account = accounts.get(i);
+            labels[i] = getString(R.string.account_name_email,
+                    safeText(account.getName()), safeText(account.getEmail()));
+            if (account.isSelected()) checked = i;
+        }
+        labels[accounts.size()] = getString(R.string.add_account);
+        labels[accounts.size() + 1] = getString(R.string.use_without_account);
+        final AlertDialog[] holder = new AlertDialog[1];
+        holder[0] = new AlertDialog.Builder(this)
+                .setTitle(R.string.account)
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    dialog.dismiss();
+                    if (which < accounts.size()) signInService.selectAccount(accounts.get(which));
+                    else if (which == accounts.size()) startDeviceSignIn();
+                    else signInService.selectAccount(null);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        holder[0].show();
+    }
+
+    private void startDeviceSignIn() {
+        if (signInAction != null) signInAction.dispose();
+        showSignInDialog(R.string.sign_in_youtube, getString(R.string.requesting_sign_in_code), null);
+        signInAction = signInService.signInObserve().subscribe(
+                code -> runUi(() -> showActivationCode(code)),
+                error -> runUi(() -> showSignInDialog(R.string.sign_in_youtube,
+                        getString(R.string.sign_in_error, safeText(error.getMessage())), null)),
+                () -> runUi(() -> {
+                    signInAction = null;
+                    if (signInDialog != null) signInDialog.dismiss();
+                    Toast.makeText(this, R.string.sign_in_complete, Toast.LENGTH_LONG).show();
+                    updateBadge();
+                    presenter.refresh();
+                }));
+    }
+
+    private void showActivationCode(String code) {
+        String activationUrl = "https://yt.be/activate";
+        String qrUrl = "https://youtube.com/qr/activate/" + code.replace(" ", "-");
+        ImageView qrView = createQrView(qrUrl);
+        showSignInDialog(R.string.activate_account_title,
+                getString(R.string.activate_account_message, activationUrl, code), qrView);
+    }
+
+    private void showSignInDialog(int title, String message, @Nullable View view) {
+        if (signInDialog != null) signInDialog.dismiss();
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
+                    if (signInAction != null) signInAction.dispose();
+                    signInAction = null;
+                });
+        if (view != null) builder.setView(view);
+        signInDialog = builder.create();
+        signInDialog.show();
+    }
+
+    @Nullable
+    private ImageView createQrView(String value) {
+        try {
+            int size = 560;
+            BitMatrix matrix = new QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, size, size);
+            int[] pixels = new int[size * size];
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) pixels[y * size + x] = matrix.get(x, y) ? Color.BLACK : Color.WHITE;
+            }
+            Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+            bitmap.setPixels(pixels, 0, size, 0, 0, size, size);
+            ImageView view = new ImageView(this);
+            int padding = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 20,
+                    getResources().getDisplayMetrics());
+            view.setPadding(padding, padding, padding, padding);
+            view.setBackgroundColor(Color.WHITE);
+            view.setImageBitmap(bitmap);
+            view.setContentDescription(value);
+            return view;
+        } catch (WriterException error) {
+            return null;
+        }
     }
 
     private void applyVideoGroup(VideoGroup incoming) {
@@ -790,6 +918,10 @@ public final class MainActivity extends Activity implements BrowseView {
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private String safeText(String value) {
+        return TextUtils.isEmpty(value) ? "—" : value;
     }
 
     private int color(@ColorRes int resourceId) {

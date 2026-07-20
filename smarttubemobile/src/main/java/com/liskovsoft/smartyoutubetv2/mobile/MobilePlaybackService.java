@@ -239,6 +239,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private String liveChatKey;
     private List<SuggestionOption> suggestions = Collections.emptyList();
     private String sourceType = "unresolved";
+    private int likeStatus = MediaItemMetadata.LIKE_STATUS_INDIFFERENT;
+    private boolean subscribed;
+    private String channelId;
     private long sleepTimerEndRealtimeMs;
 
     static void load(Context context, Video video) {
@@ -383,6 +386,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
         liveChatKey = null;
         suggestions = Collections.emptyList();
         sourceType = "resolving";
+        likeStatus = MediaItemMetadata.LIKE_STATUS_INDIFFERENT;
+        subscribed = false;
+        channelId = null;
         updateSessionMetadata();
         updateForegroundNotification();
         notifyListeners();
@@ -529,6 +535,16 @@ public final class MobilePlaybackService extends Service implements Player.Event
     @Nullable String getCommentsKey() { return commentsKey; }
     @Nullable String getLiveChatKey() { return liveChatKey; }
     List<SuggestionOption> getSuggestions() { return suggestions; }
+    int getLikeStatus() { return likeStatus; }
+    boolean isSubscribed() { return subscribed; }
+    @Nullable String getChannelId() { return channelId; }
+
+    void applyMetadataReadback(MediaItemMetadata metadata) {
+        if (metadata != null && currentVideo != null
+                && TextUtils.equals(currentVideo.videoId, metadata.getVideoId())) {
+            onMetadataLoaded(metadata);
+        }
+    }
 
     DebugSnapshot getDebugSnapshot() {
         Format video = player.getVideoFormat();
@@ -592,6 +608,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     private void onMetadataLoaded(MediaItemMetadata metadata) {
+        if (currentVideo != null) currentVideo.sync(metadata);
+        likeStatus = metadata.getLikeStatus();
+        subscribed = metadata.isSubscribed();
+        channelId = metadata.getChannelId();
         commentsKey = metadata.getCommentsKey();
         liveChatKey = metadata.getLiveChatKey();
         List<SuggestionOption> suggestionResult = new ArrayList<>();
