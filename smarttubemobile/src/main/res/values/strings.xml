@@ -31,8 +31,25 @@
     <string name="shared_video">Shared SmartTube video</string>
     <string name="smarttube_video">SmartTube video</string>
     <string name="video_id_value">Video ID: %1$s</string>
-    <string name="video_thumbnail">Video thumbnail</string>
-    <string name="player_foundation_message">This is the real mobile watch route. Service-owned playback and synchronized media controls are introduced in M4.</string>
+
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="previous">Previous</string>
+    <string name="next">Next</string>
+    <string name="playback_queue">SmartTube playback queue</string>
+    <string name="queue_position">Queue %1$d of %2$d</string>
+    <string name="playback_progress">Playback progress</string>
+    <string name="playback_position">%1$s / %2$s</string>
+    <string name="playback_position_initial">0:00 / 0:00</string>
+    <string name="playback_playing">Playing from the foreground playback service</string>
+    <string name="playback_paused">Paused — service and queue remain active</string>
+    <string name="playback_buffering">Buffering real SmartTube media…</string>
+    <string name="playback_error_value">Playback error: %1$s</string>
+    <string name="playback_source_unavailable">No playable SmartTube media source was returned.</string>
+    <string name="playback_channel_name">SmartTube playback</string>
+    <string name="playback_channel_description">Background audio and synchronized media controls</string>
+    <string name="playback_service_starting">Starting playback service…</string>
+    <string name="playback_service_ready">Playback service ready</string>
     <string name="back">Back</string>
     <string name="search">Search</string>
     <string name="search_hint">Search videos, channels and playlists</string>
