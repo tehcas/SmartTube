@@ -50,6 +50,8 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.errors.ErrorFragmentData
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.BrowsePresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.BrowseView;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
+import com.liskovsoft.smartyoutubetv2.common.misc.BrowseProcessorManager;
+import com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import java.util.ArrayList;
@@ -90,12 +92,20 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     private Disposable signInAction;
     private AlertDialog signInDialog;
     private SignInService signInService;
+    private BrowseProcessorManager fallbackBrowseProcessor;
+    private boolean lastDeArrowTitles;
+    private boolean lastDeArrowThumbnails;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         bindViews();
+        fallbackBrowseProcessor = new BrowseProcessorManager(this,
+                video -> runUi(this::renderShelves));
+        DeArrowData deArrowData = DeArrowData.instance(this);
+        lastDeArrowTitles = deArrowData.isReplaceTitlesEnabled();
+        lastDeArrowThumbnails = deArrowData.isReplaceThumbnailsEnabled();
 
         isTablet = getResources().getBoolean(R.bool.is_tablet);
         configureAdaptiveNavigation();
@@ -127,6 +137,11 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         super.onResume();
         presenter.setView(this);
         presenter.onViewResumed();
+        DeArrowData data = DeArrowData.instance(this);
+        if (lastDeArrowTitles != data.isReplaceTitlesEnabled()
+                || lastDeArrowThumbnails != data.isReplaceThumbnailsEnabled()) {
+            refreshVisibleDeArrowCards();
+        }
     }
 
     @Override
@@ -138,6 +153,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     @Override
     protected void onDestroy() {
         disposeHomeFallback();
+        fallbackBrowseProcessor.dispose();
         if (signInAction != null) signInAction.dispose();
         if (signInDialog != null) signInDialog.dismiss();
         MediaServiceManager.instance().removeAccountListener(this);
@@ -549,6 +565,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
                                     first = false;
                                 }
                                 applyVideoGroup(group);
+                                fallbackBrowseProcessor.process(group);
                             }
                             progressShowing = false;
                             progressBar.setVisibility(View.GONE);
@@ -847,7 +864,10 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
             row.setPadding(dp(20), dp(18), dp(20), dp(18));
             row.setBackground(createCardBackground());
             row.setOnClickListener(view -> {
-                if (item.onClick != null) {
+                if (TextUtils.equals(item.title,
+                        getString(com.liskovsoft.smartyoutubetv2.common.R.string.dearrow_provider))) {
+                    showMobileDeArrowSettings();
+                } else if (item.onClick != null) {
                     item.onClick.run();
                 }
             });
@@ -858,6 +878,41 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         }
         shelvesContainer.addView(grid);
         hideState();
+    }
+
+    private void showMobileDeArrowSettings() {
+        DeArrowData data = DeArrowData.instance(this);
+        String[] choices = {
+                getString(R.string.dearrow_titles,
+                        getString(data.isReplaceTitlesEnabled() ? R.string.state_on : R.string.state_off)),
+                getString(R.string.dearrow_thumbnails,
+                        getString(data.isReplaceThumbnailsEnabled() ? R.string.state_on : R.string.state_off))
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.dearrow_settings)
+                .setItems(choices, (dialog, which) -> {
+                    if (which == 0) data.setReplaceTitlesEnabled(!data.isReplaceTitlesEnabled());
+                    if (which == 1) data.setReplaceThumbnailsEnabled(!data.isReplaceThumbnailsEnabled());
+                    refreshVisibleDeArrowCards();
+                    showMobileDeArrowSettings();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void refreshVisibleDeArrowCards() {
+        DeArrowData data = DeArrowData.instance(this);
+        lastDeArrowTitles = data.isReplaceTitlesEnabled();
+        lastDeArrowThumbnails = data.isReplaceThumbnailsEnabled();
+        for (VideoGroup group : visibleGroups) {
+            for (Video video : group.getVideos()) {
+                video.deArrowTitle = null;
+                video.altCardImageUrl = null;
+                video.deArrowProcessed = false;
+            }
+            fallbackBrowseProcessor.process(group);
+        }
+        renderShelves();
     }
 
     private void showState(String message, @Nullable String actionText, @Nullable Runnable action) {

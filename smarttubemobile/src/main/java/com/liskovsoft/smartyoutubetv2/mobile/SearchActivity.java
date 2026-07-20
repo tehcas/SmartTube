@@ -41,6 +41,8 @@ import com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter;
 
 import com.liskovsoft.smartyoutubetv2.common.app.views.SearchView;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
+import com.liskovsoft.smartyoutubetv2.common.misc.BrowseProcessorManager;
+import com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -66,6 +68,9 @@ public final class SearchActivity extends Activity implements SearchView {
     private Video paginationVideo;
     private boolean searchSubmitted;
     private boolean paginationRequested;
+    private BrowseProcessorManager mobileBrowseProcessor;
+    private boolean lastDeArrowTitles;
+    private boolean lastDeArrowThumbnails;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -73,6 +78,10 @@ public final class SearchActivity extends Activity implements SearchView {
         setContentView(R.layout.activity_search);
         bindViews();
         configureInput();
+        mobileBrowseProcessor = new BrowseProcessorManager(this, this::updateResultCard);
+        DeArrowData deArrowData = DeArrowData.instance(this);
+        lastDeArrowTitles = deArrowData.isReplaceTitlesEnabled();
+        lastDeArrowThumbnails = deArrowData.isReplaceThumbnailsEnabled();
 
         presenter = SearchPresenter.instance(this);
         presenter.setView(this);
@@ -84,6 +93,7 @@ public final class SearchActivity extends Activity implements SearchView {
         super.onResume();
         presenter.setView(this);
         presenter.onViewResumed();
+        refreshDeArrowResultsIfChanged();
     }
 
     @Override
@@ -95,6 +105,7 @@ public final class SearchActivity extends Activity implements SearchView {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(suggestionRequest);
+        mobileBrowseProcessor.dispose();
         presenter.onViewDestroyed();
         super.onDestroy();
     }
@@ -232,6 +243,10 @@ public final class SearchActivity extends Activity implements SearchView {
             if (group == null || group.isEmpty()) {
                 return;
             }
+            if (group.getAction() == VideoGroup.ACTION_SYNC) {
+                for (Video video : group.getVideos()) updateResultCard(video);
+                return;
+            }
             TextView heading = new TextView(this);
             heading.setText(group.getTitle());
             heading.setTextColor(color(R.color.smarttube_text_primary));
@@ -270,6 +285,7 @@ public final class SearchActivity extends Activity implements SearchView {
         card.setClickable(true);
         card.setFocusable(true);
         card.setContentDescription(resultDescription(video));
+        card.setTag(video);
 
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -327,6 +343,52 @@ public final class SearchActivity extends Activity implements SearchView {
         params.setMargins(dp(12), dp(5), dp(12), dp(5));
         card.setLayoutParams(params);
         return card;
+    }
+
+    private void updateResultCard(Video video) {
+        if (video == null || TextUtils.isEmpty(video.videoId)) return;
+        for (int i = 0; i < resultsContainer.getChildCount(); i++) {
+            View child = resultsContainer.getChildAt(i);
+            Object tag = child.getTag();
+            if (!(child instanceof LinearLayout) || !(tag instanceof Video)
+                    || !TextUtils.equals(video.videoId, ((Video) tag).videoId)) {
+                continue;
+            }
+            LinearLayout card = (LinearLayout) child;
+            if (card.getChildCount() < 2 || !(card.getChildAt(0) instanceof ImageView)
+                    || !(card.getChildAt(1) instanceof LinearLayout)) return;
+            ImageView image = (ImageView) card.getChildAt(0);
+            LinearLayout text = (LinearLayout) card.getChildAt(1);
+            if (text.getChildCount() > 1 && text.getChildAt(1) instanceof TextView) {
+                ((TextView) text.getChildAt(1)).setText(video.getTitle());
+            }
+            card.setContentDescription(resultDescription(video));
+            Glide.with(getApplicationContext()).load(video.getCardImageUrl())
+                    .placeholder(R.drawable.ic_video_placeholder)
+                    .error(R.drawable.ic_video_placeholder)
+                    .centerCrop().into(image);
+            return;
+        }
+    }
+
+    private void refreshDeArrowResultsIfChanged() {
+        DeArrowData data = DeArrowData.instance(this);
+        if (lastDeArrowTitles == data.isReplaceTitlesEnabled()
+                && lastDeArrowThumbnails == data.isReplaceThumbnailsEnabled()) return;
+        lastDeArrowTitles = data.isReplaceTitlesEnabled();
+        lastDeArrowThumbnails = data.isReplaceThumbnailsEnabled();
+        List<Video> videos = new ArrayList<>();
+        for (int i = 0; i < resultsContainer.getChildCount(); i++) {
+            Object tag = resultsContainer.getChildAt(i).getTag();
+            if (!(tag instanceof Video)) continue;
+            Video video = (Video) tag;
+            video.deArrowTitle = null;
+            video.altCardImageUrl = null;
+            video.deArrowProcessed = false;
+            videos.add(video);
+            updateResultCard(video);
+        }
+        if (!videos.isEmpty()) mobileBrowseProcessor.process(VideoGroup.from(videos));
     }
 
     private String resultType(Video video) {

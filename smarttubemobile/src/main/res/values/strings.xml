@@ -95,6 +95,12 @@
     <string name="sponsorblock_action_confirm">Ask before skipping</string>
     <string name="state_on">On</string>
     <string name="state_off">Off</string>
+    <string name="dearrow_settings">DeArrow</string>
+    <string name="dearrow_titles">Crowdsourced titles: %1$s</string>
+    <string name="dearrow_thumbnails">Crowdsourced thumbnails: %1$s</string>
+    <string name="dearrow_current_status">Current provider branding</string>
+    <string name="dearrow_status_value">Original title:\n%1$s\n\nApplied title:\n%2$s\n\nApplied thumbnail:\n%3$s</string>
+    <string name="dearrow_no_replacement">No provider replacement</string>
     <string name="customize_controls">Customize player controls</string>
     <string name="control_quality">Quality</string>
     <string name="control_speed">Speed</string>

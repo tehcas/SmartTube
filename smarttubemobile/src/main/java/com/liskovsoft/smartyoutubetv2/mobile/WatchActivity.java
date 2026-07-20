@@ -59,6 +59,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.CommentItem;
 import com.liskovsoft.mediaserviceinterfaces.data.ChatItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
@@ -387,6 +388,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 getString(R.string.video_qr_code),
                 getString(R.string.debug_statistics),
                 getString(R.string.sponsorblock_settings),
+                getString(R.string.dearrow_settings),
                 getString(R.string.account_actions)
         };
         new AlertDialog.Builder(this)
@@ -406,7 +408,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                         case 10: showQrCodeDialog(); break;
                         case 11: showDebugStatisticsDialog(); break;
                         case 12: showSponsorBlockSettingsDialog(); break;
-                        case 13: showAuthenticatedActionsDialog(); break;
+                        case 13: showDeArrowSettingsDialog(); break;
+                        case 14: showAuthenticatedActionsDialog(); break;
                         default: break;
                     }
                 })
@@ -520,10 +523,58 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 stats.renderedVideoBuffers, stats.droppedVideoBuffers, stats.skippedVideoBuffers,
                 stats.maxConsecutiveDropped, playbackService.getQueueIndex() + 1, playbackService.getQueueSize())
                 + "\n\nSponsorBlock segments: " + playbackService.getSponsorSegments().size()
-                + "\nLast SponsorBlock skip: " + fallback(playbackService.getLastSponsorSkipSummary());
+                + "\nLast SponsorBlock skip: " + fallback(playbackService.getLastSponsorSkipSummary())
+                + "\n\nDeArrow title: " + fallback(playbackService.getAppliedDeArrowTitle())
+                + "\nDeArrow thumbnail: " + fallback(playbackService.getAppliedDeArrowThumbnail())
+                + "\nDeArrow related replacements: " + playbackService.getDeArrowSuggestionCount();
         new AlertDialog.Builder(this)
                 .setTitle(R.string.debug_statistics)
                 .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showDeArrowSettingsDialog() {
+        if (playbackService == null) return;
+        DeArrowData data = DeArrowData.instance(this);
+        String[] choices = {
+                getString(R.string.dearrow_titles,
+                        getString(data.isReplaceTitlesEnabled() ? R.string.state_on : R.string.state_off)),
+                getString(R.string.dearrow_thumbnails,
+                        getString(data.isReplaceThumbnailsEnabled() ? R.string.state_on : R.string.state_off)),
+                getString(R.string.dearrow_current_status)
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.dearrow_settings)
+                .setItems(choices, (dialog, which) -> {
+                    if (which == 0) {
+                        data.setReplaceTitlesEnabled(!data.isReplaceTitlesEnabled());
+                        playbackService.reloadDeArrow();
+                        uiHandler.postDelayed(this::showDeArrowSettingsDialog, 700L);
+                    } else if (which == 1) {
+                        data.setReplaceThumbnailsEnabled(!data.isReplaceThumbnailsEnabled());
+                        playbackService.reloadDeArrow();
+                        uiHandler.postDelayed(this::showDeArrowSettingsDialog, 700L);
+                    } else {
+                        showDeArrowStatusDialog();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showDeArrowStatusDialog() {
+        if (playbackService == null || playbackService.getCurrentVideo() == null) return;
+        Video video = playbackService.getCurrentVideo();
+        String missing = getString(R.string.dearrow_no_replacement);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.dearrow_current_status)
+                .setMessage(getString(R.string.dearrow_status_value,
+                        fallback(video.title),
+                        !TextUtils.isEmpty(playbackService.getAppliedDeArrowTitle())
+                                ? playbackService.getAppliedDeArrowTitle() : missing,
+                        !TextUtils.isEmpty(playbackService.getAppliedDeArrowThumbnail())
+                                ? playbackService.getAppliedDeArrowThumbnail() : missing))
                 .setPositiveButton(android.R.string.ok, null)
                 .show();
     }

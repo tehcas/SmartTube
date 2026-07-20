@@ -8,6 +8,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -40,6 +41,7 @@ import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.Selecti
 import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
 import com.google.android.exoplayer2.decoder.DecoderCounters;
 import com.liskovsoft.mediaserviceinterfaces.data.ChapterItem;
+import com.liskovsoft.mediaserviceinterfaces.data.DeArrowData;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
@@ -64,7 +66,7 @@ import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
-
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -99,19 +101,31 @@ public final class MobilePlaybackService extends Service implements Player.Event
 
     static final class QueueEntry {
         final String videoId;
-        final String title;
+        final String originalTitle;
         final String author;
-        final String image;
+        final String originalImage;
+        String title;
+        String image;
 
         QueueEntry(String videoId, String title, String author, String image) {
             this.videoId = videoId;
+            originalTitle = title;
             this.title = title;
             this.author = author;
+            originalImage = image;
             this.image = image;
         }
 
         static QueueEntry from(Video video) {
-            return new QueueEntry(video.videoId, video.getTitle(), video.getAuthor(), video.getCardImageUrl());
+            return new QueueEntry(video.videoId,
+                    !TextUtils.isEmpty(video.title) ? video.title : video.getTitle(),
+                    video.getAuthor(),
+                    !TextUtils.isEmpty(video.cardImageUrl) ? video.cardImageUrl : video.getCardImageUrl());
+        }
+
+        void restoreOriginalBranding() {
+            title = originalTitle;
+            image = originalImage;
         }
     }
 
@@ -154,21 +168,31 @@ public final class MobilePlaybackService extends Service implements Player.Event
     static final class SuggestionOption {
         final String section;
         final String videoId;
-        final String title;
+        final String originalTitle;
         final String author;
-        final String image;
+        final String originalImage;
+        String title;
+        String image;
 
         SuggestionOption(String section, MediaItem item) {
             this.section = section;
             videoId = item.getVideoId();
-            title = item.getTitle();
+            originalTitle = title = item.getTitle();
             author = !TextUtils.isEmpty(item.getAuthor()) ? item.getAuthor()
                     : item.getSecondTitle() != null ? item.getSecondTitle().toString() : null;
-            image = item.getCardImageUrl();
+            originalImage = image = item.getCardImageUrl();
         }
 
         QueueEntry toQueueEntry() {
-            return new QueueEntry(videoId, title, author, image);
+            QueueEntry entry = new QueueEntry(videoId, originalTitle, author, originalImage);
+            entry.title = title;
+            entry.image = image;
+            return entry;
+        }
+
+        void restoreOriginalBranding() {
+            title = originalTitle;
+            image = originalImage;
         }
     }
 
@@ -244,6 +268,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private Disposable formatInfoAction;
     private Disposable metadataAction;
     private Disposable sponsorSegmentsAction;
+    private Disposable deArrowAction;
+    private Disposable suggestionDeArrowAction;
     private int queueIndex = -1;
     private Video currentVideo;
     private String playbackError;
@@ -266,6 +292,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private long sponsorEventSequence;
     private String handledSponsorKey;
     private String lastSponsorSkipSummary;
+    private String appliedDeArrowTitle;
+    private String appliedDeArrowThumbnail;
+    private int deArrowSuggestionCount;
+    private final Set<String> deArrowSuggestionIds = new HashSet<>();
     private long sleepTimerEndRealtimeMs;
 
     static void load(Context context, Video video) {
@@ -414,6 +444,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
         sponsorEvent = null;
         handledSponsorKey = null;
         lastSponsorSkipSummary = null;
+        appliedDeArrowTitle = null;
+        appliedDeArrowThumbnail = null;
+        deArrowSuggestionCount = 0;
+        deArrowSuggestionIds.clear();
         sourceType = "resolving";
         likeStatus = MediaItemMetadata.LIKE_STATUS_INDIFFERENT;
         subscribed = false;
@@ -425,6 +459,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
         RxHelper.disposeActions(formatInfoAction);
         RxHelper.disposeActions(metadataAction);
         RxHelper.disposeActions(sponsorSegmentsAction);
+        RxHelper.disposeActions(deArrowAction);
+        RxHelper.disposeActions(suggestionDeArrowAction);
         formatInfoAction = YouTubeServiceManager.instance()
                 .getMediaItemService()
                 .getFormatInfoObserve(entry.videoId)
@@ -433,6 +469,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
                 .getMediaItemService()
                 .getMetadataObserve(entry.videoId, null, 0, null)
                 .subscribe(this::onMetadataLoaded, error -> { });
+        loadCurrentDeArrow();
     }
 
     private void openFormatInfo(MediaItemFormatInfo info, boolean restoreProgress) {
@@ -571,6 +608,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
     List<SponsorSegment> getSponsorSegments() { return sponsorSegments; }
     @Nullable SponsorEvent getSponsorEvent() { return sponsorEvent; }
     @Nullable String getLastSponsorSkipSummary() { return lastSponsorSkipSummary; }
+    @Nullable String getAppliedDeArrowTitle() { return appliedDeArrowTitle; }
+    @Nullable String getAppliedDeArrowThumbnail() { return appliedDeArrowThumbnail; }
+    int getDeArrowSuggestionCount() { return deArrowSuggestionCount; }
 
     void acknowledgeSponsorEvent(long sequence) {
         if (sponsorEvent != null && sponsorEvent.sequence == sequence && !sponsorEvent.confirmationRequired) {
@@ -598,6 +638,30 @@ public final class MobilePlaybackService extends Service implements Player.Event
         sponsorEvent = null;
         handledSponsorKey = null;
         loadSponsorSegments();
+    }
+
+    void reloadDeArrow() {
+        RxHelper.disposeActions(deArrowAction);
+        RxHelper.disposeActions(suggestionDeArrowAction);
+        for (QueueEntry entry : queue) entry.restoreOriginalBranding();
+        for (SuggestionOption suggestion : suggestions) suggestion.restoreOriginalBranding();
+        appliedDeArrowTitle = null;
+        appliedDeArrowThumbnail = null;
+        deArrowSuggestionCount = 0;
+        deArrowSuggestionIds.clear();
+        if (currentVideo != null && queueIndex >= 0 && queueIndex < queue.size()) {
+            QueueEntry entry = queue.get(queueIndex);
+            currentVideo.title = entry.originalTitle;
+            currentVideo.deArrowTitle = null;
+            currentVideo.cardImageUrl = entry.originalImage;
+            currentVideo.altCardImageUrl = null;
+        }
+        updateSessionQueue();
+        updateSessionMetadata();
+        updateForegroundNotification();
+        notifyListeners();
+        loadCurrentDeArrow();
+        loadSuggestionDeArrow();
     }
 
     void applyMetadataReadback(MediaItemMetadata metadata) {
@@ -690,6 +754,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
             }
         }
         suggestions = suggestionResult;
+        loadSuggestionDeArrow();
         List<ChapterOption> result = new ArrayList<>();
         List<ChapterItem> serviceChapters = metadata.getChapters();
         if (serviceChapters != null) {
@@ -724,6 +789,73 @@ public final class MobilePlaybackService extends Service implements Player.Event
         chapters = Collections.unmodifiableList(unique);
         loadSponsorSegments();
         notifyListeners();
+    }
+
+    private void loadCurrentDeArrow() {
+        RxHelper.disposeActions(deArrowAction);
+        com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData preferences =
+                com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData.instance(this);
+        if (currentVideo == null || TextUtils.isEmpty(currentVideo.videoId)
+                || (!preferences.isReplaceTitlesEnabled() && !preferences.isReplaceThumbnailsEnabled())) return;
+        final String requestedVideoId = currentVideo.videoId;
+        deArrowAction = YouTubeServiceManager.instance().getMediaItemService()
+                .getDeArrowDataObserve(requestedVideoId)
+                .subscribe(data -> handler.post(() -> applyCurrentDeArrow(requestedVideoId, data)), error -> { });
+    }
+
+    private void applyCurrentDeArrow(String requestedVideoId, DeArrowData data) {
+        if (data == null || currentVideo == null || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
+        com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData preferences =
+                com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData.instance(this);
+        QueueEntry entry = queueIndex >= 0 && queueIndex < queue.size() ? queue.get(queueIndex) : null;
+        if (preferences.isReplaceTitlesEnabled() && !TextUtils.isEmpty(data.getTitle())) {
+            currentVideo.deArrowTitle = data.getTitle();
+            appliedDeArrowTitle = data.getTitle();
+            if (entry != null) entry.title = data.getTitle();
+        }
+        if (preferences.isReplaceThumbnailsEnabled() && !TextUtils.isEmpty(data.getThumbnailUrl())) {
+            currentVideo.altCardImageUrl = data.getThumbnailUrl();
+            appliedDeArrowThumbnail = data.getThumbnailUrl();
+            if (entry != null) entry.image = data.getThumbnailUrl();
+        }
+        updateSessionQueue();
+        updateSessionMetadata();
+        updateForegroundNotification();
+        notifyListeners();
+    }
+
+    private void loadSuggestionDeArrow() {
+        RxHelper.disposeActions(suggestionDeArrowAction);
+        deArrowSuggestionCount = 0;
+        deArrowSuggestionIds.clear();
+        com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData preferences =
+                com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData.instance(this);
+        if (suggestions.isEmpty()
+                || (!preferences.isReplaceTitlesEnabled() && !preferences.isReplaceThumbnailsEnabled())) return;
+        List<String> videoIds = new ArrayList<>();
+        for (SuggestionOption suggestion : suggestions) videoIds.add(suggestion.videoId);
+        final String requestedVideoId = currentVideo != null ? currentVideo.videoId : null;
+        suggestionDeArrowAction = YouTubeServiceManager.instance().getMediaItemService()
+                .getDeArrowDataObserve(videoIds)
+                .subscribe(data -> handler.post(() -> {
+                    if (data == null || currentVideo == null
+                            || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
+                    for (SuggestionOption suggestion : suggestions) {
+                        if (!TextUtils.equals(suggestion.videoId, data.getVideoId())) continue;
+                        boolean applied = false;
+                        if (preferences.isReplaceTitlesEnabled() && !TextUtils.isEmpty(data.getTitle())) {
+                            suggestion.title = data.getTitle();
+                            applied = true;
+                        }
+                        if (preferences.isReplaceThumbnailsEnabled() && !TextUtils.isEmpty(data.getThumbnailUrl())) {
+                            suggestion.image = data.getThumbnailUrl();
+                            applied = true;
+                        }
+                        if (applied && deArrowSuggestionIds.add(suggestion.videoId)) deArrowSuggestionCount++;
+                        notifyListeners();
+                        break;
+                    }
+                }), error -> { });
     }
 
     private void loadSponsorSegments() {
@@ -917,11 +1049,12 @@ public final class MobilePlaybackService extends Service implements Player.Event
         List<MediaSessionCompat.QueueItem> sessionQueue = new ArrayList<>();
         for (int i = 0; i < queue.size(); i++) {
             QueueEntry entry = queue.get(i);
-            MediaDescriptionCompat description = new MediaDescriptionCompat.Builder()
+            MediaDescriptionCompat.Builder builder = new MediaDescriptionCompat.Builder()
                     .setMediaId(entry.videoId)
                     .setTitle(entry.title)
-                    .setSubtitle(entry.author)
-                    .build();
+                    .setSubtitle(entry.author);
+            if (!TextUtils.isEmpty(entry.image)) builder.setIconUri(Uri.parse(entry.image));
+            MediaDescriptionCompat description = builder.build();
             sessionQueue.add(new MediaSessionCompat.QueueItem(description, i));
         }
         mediaSession.setQueue(sessionQueue);
@@ -1058,6 +1191,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
         RxHelper.disposeActions(formatInfoAction);
         RxHelper.disposeActions(metadataAction);
         RxHelper.disposeActions(sponsorSegmentsAction);
+        RxHelper.disposeActions(deArrowAction);
+        RxHelper.disposeActions(suggestionDeArrowAction);
         listeners.clear();
         if (mediaSession != null) {
             mediaSession.setActive(false);
