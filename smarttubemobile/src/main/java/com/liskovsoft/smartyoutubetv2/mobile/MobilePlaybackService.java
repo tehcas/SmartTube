@@ -26,24 +26,43 @@ import androidx.media.app.NotificationCompat.MediaStyle;
 import com.google.android.exoplayer2.DefaultRenderersFactory;
 import com.google.android.exoplayer2.ExoPlaybackException;
 import com.google.android.exoplayer2.Player;
+import com.google.android.exoplayer2.PlaybackParameters;
 import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.MergingMediaSource;
+import com.google.android.exoplayer2.source.TrackGroupArray;
 import com.google.android.exoplayer2.trackselection.AdaptiveTrackSelection;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
+import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.Parameters;
+import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.SelectionOverride;
+import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
+import com.liskovsoft.mediaserviceinterfaces.data.ChapterItem;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo;
+import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
+import com.liskovsoft.mediaserviceinterfaces.data.MediaItemStoryboard;
 import com.liskovsoft.sharedutils.rx.RxHelper;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.service.VideoStateService;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.ExoMediaSourceFactory;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.ExoPlayerInitializer;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.ExoFormatItem;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.FormatItem;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.TrackSelectorManager;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.TrackSelectorUtil;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.track.MediaTrack;
+import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
+
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import io.reactivex.disposables.Disposable;
 
@@ -64,6 +83,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private static final String CHANNEL_ID = "mobile_playback";
     private static final int NOTIFICATION_ID = 4104;
     private static final long STATE_SAVE_INTERVAL_MS = 10_000L;
+    private static final Pattern CHAPTER_LINE = Pattern.compile(
+            "(?m)^\\s*(?:[-•]\\s*)?((?:\\d{1,2}:)?\\d{1,2}:\\d{2})\\s+(.+?)\\s*$");
 
     interface Listener {
         void onPlaybackStateChanged();
@@ -87,6 +108,28 @@ public final class MobilePlaybackService extends Service implements Player.Event
         }
     }
 
+    static final class TrackOption {
+        final String label;
+        final MediaTrack track;
+        final boolean selected;
+
+        TrackOption(String label, MediaTrack track, boolean selected) {
+            this.label = label;
+            this.track = track;
+            this.selected = selected;
+        }
+    }
+
+    static final class ChapterOption {
+        final String title;
+        final long startTimeMs;
+
+        ChapterOption(String title, long startTimeMs) {
+            this.title = title;
+            this.startTimeMs = startTimeMs;
+        }
+    }
+
     final class LocalBinder extends Binder {
         MobilePlaybackService getService() {
             return MobilePlaybackService.this;
@@ -107,14 +150,22 @@ public final class MobilePlaybackService extends Service implements Player.Event
     };
 
     private SimpleExoPlayer player;
+    private DefaultTrackSelector trackSelector;
+    private TrackSelectorManager trackSelectorManager;
     private ExoPlayerInitializer playerInitializer;
     private ExoMediaSourceFactory mediaSourceFactory;
     private MediaSessionCompat mediaSession;
     private Disposable formatInfoAction;
+    private Disposable metadataAction;
     private int queueIndex = -1;
     private Video currentVideo;
     private String playbackError;
     private long lastSavedPosition = -STATE_SAVE_INTERVAL_MS;
+    private boolean restoredTrackPreferences;
+    private List<TrackOption> videoTrackOptions = Collections.emptyList();
+    private List<TrackOption> subtitleTrackOptions = Collections.emptyList();
+    private MediaItemStoryboard storyboard;
+    private List<ChapterOption> chapters = Collections.emptyList();
 
     static void load(Context context, Video video) {
         MobileSelectionStore.put(video);
@@ -138,7 +189,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     private void initializePlayer() {
-        DefaultTrackSelector trackSelector = new DefaultTrackSelector(new AdaptiveTrackSelection.Factory());
+        trackSelector = new DefaultTrackSelector(new AdaptiveTrackSelection.Factory());
+        trackSelectorManager = new TrackSelectorManager(this);
+        trackSelectorManager.setTrackSelector(trackSelector);
         playerInitializer = new ExoPlayerInitializer(this);
         player = playerInitializer.createPlayer(this, new DefaultRenderersFactory(this), trackSelector);
         player.addListener(this);
@@ -246,19 +299,31 @@ public final class MobilePlaybackService extends Service implements Player.Event
         currentVideo.cardImageUrl = entry.image;
         playbackError = null;
         lastSavedPosition = -STATE_SAVE_INTERVAL_MS;
+        restoredTrackPreferences = false;
+        videoTrackOptions = Collections.emptyList();
+        subtitleTrackOptions = Collections.emptyList();
+        storyboard = null;
+        chapters = Collections.emptyList();
         updateSessionMetadata();
         updateForegroundNotification();
         notifyListeners();
 
         RxHelper.disposeActions(formatInfoAction);
+        RxHelper.disposeActions(metadataAction);
         formatInfoAction = YouTubeServiceManager.instance()
                 .getMediaItemService()
                 .getFormatInfoObserve(entry.videoId)
                 .subscribe(info -> openFormatInfo(info, restoreProgress), this::onFormatError);
+        metadataAction = YouTubeServiceManager.instance()
+                .getMediaItemService()
+                .getMetadataObserve(entry.videoId, null, 0, null)
+                .subscribe(this::onMetadataLoaded, error -> { });
     }
 
     private void openFormatInfo(MediaItemFormatInfo info, boolean restoreProgress) {
         currentVideo.sync(info);
+        storyboard = info.createStoryboard();
+        trackSelectorManager.setMergedSource(info.containsDashFormats() && info.hasExtendedHlsFormats());
         MediaSource source = null;
         if (info.containsDashFormats()) {
             source = mediaSourceFactory.fromDashFormatInfo(info);
@@ -282,6 +347,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
             return;
         }
 
+        applyPlaybackSpeed(PlayerData.instance(this).getSpeed(currentVideo.channelId), false);
         player.prepare(source);
         if (restoreProgress) {
             VideoStateService.State state = VideoStateService.instance(this).getByVideoId(currentVideo.videoId);
@@ -342,9 +408,129 @@ public final class MobilePlaybackService extends Service implements Player.Event
     int getQueueSize() { return queue.size(); }
     long getPositionMs() { return player != null ? player.getCurrentPosition() : 0; }
     long getDurationMs() { return player != null && player.getDuration() > 0 ? player.getDuration() : 0; }
+    float getPlaybackSpeed() { return player != null ? player.getPlaybackParameters().speed : 1f; }
     @Nullable Video getCurrentVideo() { return currentVideo; }
     @Nullable String getPlaybackError() { return playbackError; }
     List<QueueEntry> getQueue() { return Collections.unmodifiableList(queue); }
+    List<TrackOption> getVideoTrackOptions() { return videoTrackOptions; }
+    List<TrackOption> getSubtitleTrackOptions() { return subtitleTrackOptions; }
+    @Nullable MediaItemStoryboard getStoryboard() { return storyboard; }
+    List<ChapterOption> getChapters() { return chapters; }
+
+    private void onMetadataLoaded(MediaItemMetadata metadata) {
+        List<ChapterOption> result = new ArrayList<>();
+        List<ChapterItem> serviceChapters = metadata.getChapters();
+        if (serviceChapters != null) {
+            for (ChapterItem chapter : serviceChapters) {
+                if (chapter != null && !TextUtils.isEmpty(chapter.getTitle())) {
+                    result.add(new ChapterOption(chapter.getTitle(), chapter.getStartTimeMs()));
+                }
+            }
+        }
+        boolean parsedDescription = result.isEmpty();
+        if (parsedDescription && !TextUtils.isEmpty(metadata.getDescription())) {
+            Matcher matcher = CHAPTER_LINE.matcher(metadata.getDescription());
+            while (matcher.find()) {
+                long startTime = parseChapterTime(matcher.group(1));
+                if (startTime >= 0 && (getDurationMs() <= 0 || startTime < getDurationMs())) {
+                    result.add(new ChapterOption(matcher.group(2).trim(), startTime));
+                }
+            }
+        }
+        Collections.sort(result, (first, second) -> Long.compare(first.startTimeMs, second.startTimeMs));
+        if (parsedDescription && (result.size() < 3 || result.get(0).startTimeMs > 1_000L)) {
+            result.clear();
+        }
+        List<ChapterOption> unique = new ArrayList<>();
+        long previousStart = -1;
+        for (ChapterOption chapter : result) {
+            if (chapter.startTimeMs != previousStart) {
+                unique.add(chapter);
+                previousStart = chapter.startTimeMs;
+            }
+        }
+        chapters = Collections.unmodifiableList(unique);
+        notifyListeners();
+    }
+
+    private static long parseChapterTime(String value) {
+        String[] parts = value.split(":");
+        try {
+            long seconds = 0;
+            for (String part : parts) seconds = seconds * 60 + Long.parseLong(part);
+            return seconds * 1_000L;
+        } catch (NumberFormatException error) {
+            return -1;
+        }
+    }
+
+    void setPlaybackSpeed(float speed) {
+        applyPlaybackSpeed(speed, true);
+    }
+
+    private void applyPlaybackSpeed(float speed, boolean persist) {
+        if (player == null || speed <= 0) return;
+        float pitch = PlayerTweaksData.instance(this).isAudioTimeStretchingEnabled()
+                ? player.getPlaybackParameters().pitch : speed;
+        player.setPlaybackParameters(new PlaybackParameters(speed, pitch));
+        if (persist) {
+            PlayerData.instance(this).setSpeed(currentVideo != null ? currentVideo.channelId : null, speed);
+        }
+        updateSessionState();
+        updateForegroundNotification();
+        notifyListeners();
+    }
+
+    void selectVideoTrack(TrackOption option) {
+        selectTrack(option);
+    }
+
+    void selectSubtitleTrack(TrackOption option) {
+        selectTrack(option);
+    }
+
+    private void selectTrack(TrackOption option) {
+        if (option == null || option.track == null || trackSelectorManager == null) return;
+        trackSelectorManager.selectTrack(option.track);
+        PlayerData.instance(this).setFormat(ExoFormatItem.from(option.track));
+        refreshTrackOptions();
+        notifyListeners();
+    }
+
+    private void refreshTrackOptions() {
+        if (trackSelectorManager == null || trackSelector == null
+                || trackSelector.getCurrentMappedTrackInfo() == null) return;
+        trackSelectorManager.invalidate();
+        videoTrackOptions = buildTrackOptions(trackSelectorManager.getVideoTracks(), getString(R.string.quality_auto));
+        subtitleTrackOptions = buildTrackOptions(trackSelectorManager.getSubtitleTracks(), getString(R.string.captions_off));
+    }
+
+    private List<TrackOption> buildTrackOptions(@Nullable Set<MediaTrack> tracks, String defaultLabel) {
+        if (tracks == null || tracks.isEmpty()) return Collections.emptyList();
+        List<TrackOption> result = new ArrayList<>();
+        for (MediaTrack track : tracks) {
+            String label = track.format == null ? defaultLabel : TrackSelectorUtil.buildTrackNameShort(track.format).toString();
+            result.add(new TrackOption(label, track, isTrackSelected(track)));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    private boolean isTrackSelected(MediaTrack track) {
+        int renderer = track.rendererIndex;
+        TrackGroupArray groups = trackSelector.getCurrentMappedTrackInfo().getTrackGroups(renderer);
+        Parameters parameters = trackSelector.getParameters();
+        boolean disabled = parameters.getRendererDisabled(renderer);
+        SelectionOverride override = parameters.getSelectionOverride(renderer, groups);
+        if (track.format == null) {
+            return renderer == TrackSelectorManager.RENDERER_INDEX_SUBTITLE
+                    ? disabled : !disabled && override == null;
+        }
+        if (disabled || override == null || override.groupIndex != track.groupIndex) return false;
+        for (int selectedTrack : override.tracks) {
+            if (selectedTrack == track.trackIndex) return true;
+        }
+        return false;
+    }
 
     void addListener(Listener listener) {
         listeners.add(listener);
@@ -413,7 +599,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         if (currentVideo != null) actions |= PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS;
         PlaybackStateCompat.Builder builder = new PlaybackStateCompat.Builder()
                 .setActions(actions)
-                .setState(state, getPositionMs(), 1f)
+                .setState(state, getPositionMs(), getPlaybackSpeed())
                 .setActiveQueueItemId(queueIndex >= 0
                         ? queueIndex : MediaSessionCompat.QueueItem.UNKNOWN_ID);
         if (playbackError != null) builder.setErrorMessage(playbackError);
@@ -478,6 +664,30 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     @Override
+    public void onTracksChanged(TrackGroupArray trackGroups, TrackSelectionArray trackSelections) {
+        if (trackSelectorManager == null || trackSelector == null
+                || trackSelector.getCurrentMappedTrackInfo() == null) return;
+        trackSelectorManager.invalidate();
+        if (!restoredTrackPreferences) {
+            restoredTrackPreferences = true;
+            PlayerData data = PlayerData.instance(this);
+            FormatItem video = data.getFormat(FormatItem.TYPE_VIDEO);
+            FormatItem subtitle = data.getFormat(FormatItem.TYPE_SUBTITLE);
+            if (video != null) trackSelectorManager.selectTrack(FormatItem.toMediaTrack(video));
+            if (subtitle != null) trackSelectorManager.selectTrack(FormatItem.toMediaTrack(subtitle));
+        }
+        refreshTrackOptions();
+        notifyListeners();
+    }
+
+    @Override
+    public void onPlaybackParametersChanged(PlaybackParameters playbackParameters) {
+        updateSessionState();
+        updateForegroundNotification();
+        notifyListeners();
+    }
+
+    @Override
     public void onPlayerError(ExoPlaybackException error) {
         onFormatError(error);
     }
@@ -499,10 +709,15 @@ public final class MobilePlaybackService extends Service implements Player.Event
         handler.removeCallbacksAndMessages(null);
         persistProgress(true);
         RxHelper.disposeActions(formatInfoAction);
+        RxHelper.disposeActions(metadataAction);
         listeners.clear();
         if (mediaSession != null) {
             mediaSession.setActive(false);
             mediaSession.release();
+        }
+        if (trackSelectorManager != null) {
+            trackSelectorManager.release();
+            trackSelectorManager = null;
         }
         if (player != null) {
             player.removeListener(this);

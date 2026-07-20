@@ -46,6 +46,27 @@
         <item quantity="other">%1$d seconds</item>
     </plurals>
     <string name="seek_interval">Seek interval</string>
+    <string name="quality">Quality</string>
+    <string name="quality_auto">Auto</string>
+    <string name="speed">Speed</string>
+    <string name="captions">Captions</string>
+    <string name="captions_off">Off</string>
+    <string name="quality_button">Quality: %1$s</string>
+    <string name="speed_button">Speed: %1$s×</string>
+    <string name="speed_short">%1$s×</string>
+    <string name="captions_button">CC: %1$s</string>
+    <string name="captions_on">CC On</string>
+    <string name="captions_short_off">CC Off</string>
+    <string name="caption_size">Caption size</string>
+    <string name="caption_size_small">Small</string>
+    <string name="caption_size_normal">Normal</string>
+    <string name="caption_size_large">Large</string>
+    <string name="tracks_loading">Tracks are still loading.</string>
+    <string name="seek_preview">Seek preview</string>
+    <string name="seek_preview_at">Seek preview at %1$s</string>
+    <string name="chapters">Chapters</string>
+    <string name="chapters_count">Chapters (%1$d)</string>
+    <string name="chapters_short_count">Ch. %1$d</string>
     <string name="playback_queue">SmartTube playback queue</string>
     <string name="queue_position">Queue %1$d of %2$d</string>
     <string name="playback_progress">Playback progress</string>
