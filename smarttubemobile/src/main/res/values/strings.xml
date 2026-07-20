@@ -101,6 +101,16 @@
     <string name="dearrow_current_status">Current provider branding</string>
     <string name="dearrow_status_value">Original title:\n%1$s\n\nApplied title:\n%2$s\n\nApplied thumbnail:\n%3$s</string>
     <string name="dearrow_no_replacement">No provider replacement</string>
+    <string name="ryd_settings">Return YouTube Dislike</string>
+    <string name="ryd_enabled">Public rating counts: %1$s</string>
+    <string name="ryd_public_counts">Likes %1$s  •  Dislikes %2$s</string>
+    <string name="ryd_loading">Loading public rating counts…</string>
+    <string name="ryd_unavailable">Public rating counts unavailable</string>
+    <string name="ryd_provider_status">Current provider rating</string>
+    <string name="ryd_status_value">Provider state: %1$s\nPublic likes: %2$s\nPublic dislikes: %3$s\nProvider views: %4$s\n\nYour authenticated Like state: %5$s</string>
+    <string name="ryd_state_liked">Liked</string>
+    <string name="ryd_state_not_liked">Not liked</string>
+    <string name="ryd_state_disliked">Disliked</string>
     <string name="customize_controls">Customize player controls</string>
     <string name="control_quality">Quality</string>
     <string name="control_speed">Speed</string>

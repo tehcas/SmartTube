@@ -59,6 +59,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.CommentItem;
 import com.liskovsoft.mediaserviceinterfaces.data.ChatItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
@@ -89,6 +90,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private PlayerView playerView;
     private TextView titleView;
     private TextView authorView;
+    private TextView ratingView;
     private TextView idView;
     private TextView stateView;
     private TextView positionView;
@@ -284,6 +286,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         playerView = findViewById(R.id.watch_player);
         titleView = findViewById(R.id.watch_title);
         authorView = findViewById(R.id.watch_author);
+        ratingView = findViewById(R.id.watch_rating);
         idView = findViewById(R.id.watch_video_id);
         stateView = findViewById(R.id.watch_state);
         positionView = findViewById(R.id.watch_position);
@@ -389,6 +392,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 getString(R.string.debug_statistics),
                 getString(R.string.sponsorblock_settings),
                 getString(R.string.dearrow_settings),
+                getString(R.string.ryd_settings),
                 getString(R.string.account_actions)
         };
         new AlertDialog.Builder(this)
@@ -409,7 +413,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                         case 11: showDebugStatisticsDialog(); break;
                         case 12: showSponsorBlockSettingsDialog(); break;
                         case 13: showDeArrowSettingsDialog(); break;
-                        case 14: showAuthenticatedActionsDialog(); break;
+                        case 14: showRydSettingsDialog(); break;
+                        case 15: showAuthenticatedActionsDialog(); break;
                         default: break;
                     }
                 })
@@ -526,10 +531,59 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 + "\nLast SponsorBlock skip: " + fallback(playbackService.getLastSponsorSkipSummary())
                 + "\n\nDeArrow title: " + fallback(playbackService.getAppliedDeArrowTitle())
                 + "\nDeArrow thumbnail: " + fallback(playbackService.getAppliedDeArrowThumbnail())
-                + "\nDeArrow related replacements: " + playbackService.getDeArrowSuggestionCount();
+                + "\nDeArrow related replacements: " + playbackService.getDeArrowSuggestionCount()
+                + "\n\nRYD state: " + playbackService.getPublicRatingState()
+                + "\nRYD public likes: " + fallback(playbackService.getPublicLikeCount())
+                + "\nRYD public dislikes: " + fallback(playbackService.getPublicDislikeCount())
+                + "\nRYD provider views: " + playbackService.getPublicViewCount()
+                + "\nAuthenticated Like status: " + playbackService.getLikeStatus();
         new AlertDialog.Builder(this)
                 .setTitle(R.string.debug_statistics)
                 .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showRydSettingsDialog() {
+        if (playbackService == null) return;
+        PlayerTweaksData data = PlayerTweaksData.instance(this);
+        String[] choices = {
+                getString(R.string.ryd_enabled,
+                        getString(data.isLikesCounterEnabled() ? R.string.state_on : R.string.state_off)),
+                getString(R.string.ryd_provider_status)
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.ryd_settings)
+                .setItems(choices, (dialog, which) -> {
+                    if (which == 0) {
+                        data.setLikesCounterEnabled(!data.isLikesCounterEnabled());
+                        playbackService.reloadDislikeData();
+                        uiHandler.postDelayed(this::showRydSettingsDialog, 700L);
+                    } else {
+                        showRydStatusDialog();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showRydStatusDialog() {
+        if (playbackService == null) return;
+        String missing = getString(R.string.dearrow_no_replacement);
+        String views = playbackService.getPublicViewCount() > 0
+                ? String.format(Locale.US, "%,d", playbackService.getPublicViewCount()) : missing;
+        int likeState = playbackService.getLikeStatus();
+        String personalState = getString(likeState == MediaItemMetadata.LIKE_STATUS_LIKE
+                ? R.string.ryd_state_liked
+                : likeState == MediaItemMetadata.LIKE_STATUS_DISLIKE
+                        ? R.string.ryd_state_disliked : R.string.ryd_state_not_liked);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.ryd_provider_status)
+                .setMessage(getString(R.string.ryd_status_value,
+                        playbackService.getPublicRatingState(),
+                        fallback(playbackService.getPublicLikeCount()),
+                        fallback(playbackService.getPublicDislikeCount()),
+                        views, personalState))
                 .setPositiveButton(android.R.string.ok, null)
                 .show();
     }
@@ -1580,6 +1634,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
             authorView.setText(video.getAuthor());
             idView.setText(getString(R.string.video_id_value, video.videoId));
         }
+        renderPublicRatings();
 
         String error = playbackService.getPlaybackError();
         if (!TextUtils.isEmpty(error)) stateView.setText(getString(R.string.playback_error_value, error));
@@ -1606,6 +1661,24 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         if (!playbackService.isPlaying()) showAndScheduleControls();
         else if (isLandscape && controlsOverlay.getVisibility() == View.VISIBLE && !controlsHideScheduled) {
             showAndScheduleControls();
+        }
+    }
+
+    private void renderPublicRatings() {
+        String state = playbackService.getPublicRatingState();
+        if (TextUtils.equals("disabled", state)) {
+            ratingView.setVisibility(View.GONE);
+            return;
+        }
+        ratingView.setVisibility(View.VISIBLE);
+        if (TextUtils.equals("available", state)) {
+            ratingView.setText(getString(R.string.ryd_public_counts,
+                    fallback(playbackService.getPublicLikeCount()),
+                    fallback(playbackService.getPublicDislikeCount())));
+        } else if (TextUtils.equals("unavailable", state)) {
+            ratingView.setText(R.string.ryd_unavailable);
+        } else {
+            ratingView.setText(R.string.ryd_loading);
         }
     }
 

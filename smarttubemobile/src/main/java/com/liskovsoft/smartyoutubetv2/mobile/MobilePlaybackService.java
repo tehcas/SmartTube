@@ -42,6 +42,7 @@ import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
 import com.google.android.exoplayer2.decoder.DecoderCounters;
 import com.liskovsoft.mediaserviceinterfaces.data.ChapterItem;
 import com.liskovsoft.mediaserviceinterfaces.data.DeArrowData;
+import com.liskovsoft.mediaserviceinterfaces.data.DislikeData;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
@@ -270,6 +271,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private Disposable sponsorSegmentsAction;
     private Disposable deArrowAction;
     private Disposable suggestionDeArrowAction;
+    private Disposable dislikeDataAction;
     private int queueIndex = -1;
     private Video currentVideo;
     private String playbackError;
@@ -296,6 +298,11 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private String appliedDeArrowThumbnail;
     private int deArrowSuggestionCount;
     private final Set<String> deArrowSuggestionIds = new HashSet<>();
+    private String publicLikeCount;
+    private String publicDislikeCount;
+    private long publicViewCount;
+    private String publicRatingState = "disabled";
+    private long dislikeRequestSequence;
     private long sleepTimerEndRealtimeMs;
 
     static void load(Context context, Video video) {
@@ -448,6 +455,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
         appliedDeArrowThumbnail = null;
         deArrowSuggestionCount = 0;
         deArrowSuggestionIds.clear();
+        publicLikeCount = null;
+        publicDislikeCount = null;
+        publicViewCount = 0;
+        publicRatingState = PlayerTweaksData.instance(this).isLikesCounterEnabled() ? "loading" : "disabled";
         sourceType = "resolving";
         likeStatus = MediaItemMetadata.LIKE_STATUS_INDIFFERENT;
         subscribed = false;
@@ -461,6 +472,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         RxHelper.disposeActions(sponsorSegmentsAction);
         RxHelper.disposeActions(deArrowAction);
         RxHelper.disposeActions(suggestionDeArrowAction);
+        RxHelper.disposeActions(dislikeDataAction);
         formatInfoAction = YouTubeServiceManager.instance()
                 .getMediaItemService()
                 .getFormatInfoObserve(entry.videoId)
@@ -470,6 +482,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
                 .getMetadataObserve(entry.videoId, null, 0, null)
                 .subscribe(this::onMetadataLoaded, error -> { });
         loadCurrentDeArrow();
+        loadDislikeData();
     }
 
     private void openFormatInfo(MediaItemFormatInfo info, boolean restoreProgress) {
@@ -611,6 +624,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
     @Nullable String getAppliedDeArrowTitle() { return appliedDeArrowTitle; }
     @Nullable String getAppliedDeArrowThumbnail() { return appliedDeArrowThumbnail; }
     int getDeArrowSuggestionCount() { return deArrowSuggestionCount; }
+    @Nullable String getPublicLikeCount() { return publicLikeCount; }
+    @Nullable String getPublicDislikeCount() { return publicDislikeCount; }
+    long getPublicViewCount() { return publicViewCount; }
+    String getPublicRatingState() { return publicRatingState; }
 
     void acknowledgeSponsorEvent(long sequence) {
         if (sponsorEvent != null && sponsorEvent.sequence == sequence && !sponsorEvent.confirmationRequired) {
@@ -662,6 +679,16 @@ public final class MobilePlaybackService extends Service implements Player.Event
         notifyListeners();
         loadCurrentDeArrow();
         loadSuggestionDeArrow();
+    }
+
+    void reloadDislikeData() {
+        RxHelper.disposeActions(dislikeDataAction);
+        publicLikeCount = null;
+        publicDislikeCount = null;
+        publicViewCount = 0;
+        publicRatingState = PlayerTweaksData.instance(this).isLikesCounterEnabled() ? "loading" : "disabled";
+        notifyListeners();
+        loadDislikeData();
     }
 
     void applyMetadataReadback(MediaItemMetadata metadata) {
@@ -788,6 +815,56 @@ public final class MobilePlaybackService extends Service implements Player.Event
         }
         chapters = Collections.unmodifiableList(unique);
         loadSponsorSegments();
+        notifyListeners();
+    }
+
+    private void loadDislikeData() {
+        RxHelper.disposeActions(dislikeDataAction);
+        final long requestSequence = ++dislikeRequestSequence;
+        if (currentVideo == null || TextUtils.isEmpty(currentVideo.videoId)) return;
+        if (!PlayerTweaksData.instance(this).isLikesCounterEnabled()) {
+            publicRatingState = "disabled";
+            notifyListeners();
+            return;
+        }
+        final String requestedVideoId = currentVideo.videoId;
+        publicRatingState = "loading";
+        dislikeDataAction = YouTubeServiceManager.instance().getMediaItemService()
+                .getDislikeDataObserve(requestedVideoId)
+                .subscribe(data -> handler.post(() -> applyDislikeData(requestedVideoId, requestSequence, data)),
+                        error -> handler.post(() -> markDislikeDataUnavailable(requestedVideoId, requestSequence)));
+        handler.postDelayed(() -> {
+            if (currentVideo != null && TextUtils.equals(requestedVideoId, currentVideo.videoId)
+                    && requestSequence == dislikeRequestSequence
+                    && TextUtils.equals("loading", publicRatingState)) {
+                markDislikeDataUnavailable(requestedVideoId, requestSequence);
+            }
+        }, 12_000L);
+    }
+
+    private void applyDislikeData(String requestedVideoId, long requestSequence, DislikeData data) {
+        if (currentVideo == null || requestSequence != dislikeRequestSequence
+                || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
+        if (data == null || !TextUtils.equals(requestedVideoId, data.getVideoId())
+                || (TextUtils.isEmpty(data.getLikeCount()) && TextUtils.isEmpty(data.getDislikeCount()))) {
+            markDislikeDataUnavailable(requestedVideoId, requestSequence);
+            return;
+        }
+        publicLikeCount = data.getLikeCount();
+        publicDislikeCount = data.getDislikeCount();
+        publicViewCount = data.getViewCount();
+        publicRatingState = "available";
+        currentVideo.sync(data);
+        notifyListeners();
+    }
+
+    private void markDislikeDataUnavailable(String requestedVideoId, long requestSequence) {
+        if (currentVideo == null || requestSequence != dislikeRequestSequence
+                || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
+        publicLikeCount = null;
+        publicDislikeCount = null;
+        publicViewCount = 0;
+        publicRatingState = "unavailable";
         notifyListeners();
     }
 
@@ -1193,6 +1270,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         RxHelper.disposeActions(sponsorSegmentsAction);
         RxHelper.disposeActions(deArrowAction);
         RxHelper.disposeActions(suggestionDeArrowAction);
+        RxHelper.disposeActions(dislikeDataAction);
         listeners.clear();
         if (mediaSession != null) {
             mediaSession.setActive(false);

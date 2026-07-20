@@ -72,6 +72,16 @@
             android:textSize="14sp" />
 
         <TextView
+            android:id="@+id/watch_rating"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/smarttube_text_secondary"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/watch_state"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
