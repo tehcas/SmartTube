@@ -17,6 +17,19 @@
     <string name="use_without_account">Use without an account</string>
 
     <string name="account_name_email">%1$s\n%2$s</string>
+    <string name="account_status">Account status</string>
+    <string name="account_status_value">Accounts available: %1$d\nSelection: %2$s\nProvider readback: %3$s</string>
+    <string name="account_selection_selected">Account selected</string>
+    <string name="account_selection_without_account">Without an account</string>
+    <string name="account_selection_verifying">Switching account and verifying provider access…</string>
+    <string name="account_selection_verified">Account selection verified by the provider.</string>
+    <string name="account_selection_failed_restored">Account selection could not be verified. The previous selection was restored.</string>
+    <string name="account_selection_failed_preserved">Account provider verification failed. The current selection was preserved.</string>
+    <string name="account_readback_verified">Verified</string>
+    <string name="account_readback_verifying">Verifying</string>
+    <string name="account_readback_failed_restored">Failed; previous selection restored</string>
+    <string name="account_readback_failed_preserved">Failed; current selection preserved</string>
+    <string name="account_readback_not_verified">Not yet verified</string>
     <string name="requesting_sign_in_code">Requesting a secure YouTube device code…</string>
     <string name="activate_account_title">Activate YouTube account</string>
     <string name="activate_account_message">On another device, open %1$s and enter code:\n\n%2$s</string>

@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
@@ -14,6 +15,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Looper;
 import android.text.TextUtils;
+import android.util.Base64;
 import android.view.Gravity;
 import android.util.TypedValue;
 import android.view.View;
@@ -41,6 +43,7 @@ import com.google.zxing.qrcode.QRCodeWriter;
 import com.liskovsoft.mediaserviceinterfaces.SignInService;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
 import com.liskovsoft.mediaserviceinterfaces.oauth.Account;
+import com.liskovsoft.googlecommon.service.oauth.YouTubeAccount;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.BrowseSection;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.SettingsGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.SettingsItem;
@@ -52,14 +55,33 @@ import com.liskovsoft.smartyoutubetv2.common.app.views.BrowseView;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.smartyoutubetv2.common.misc.BrowseProcessorManager;
 import com.liskovsoft.smartyoutubetv2.common.prefs.DeArrowData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
+import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
+import com.liskovsoft.youtubeapi.service.YouTubeSignInService;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 
+import io.reactivex.Observable;
 import io.reactivex.disposables.Disposable;
 
 public final class MainActivity extends Activity implements BrowseView, MediaServiceManager.AccountChangeListener {
+    private static boolean sResumeAccountSelectionAfterConfigurationChange;
+    private static final Object ACCOUNT_FINGERPRINT_LOCK = new Object();
+    private static final String ACCOUNT_FINGERPRINT_PREFS = "mobile_account_fingerprint";
+    private static final String ACCOUNT_FINGERPRINT_SALT = "salt";
+    private static final String ACCOUNT_TRANSACTION_PREFS = "mobile_account_selection_transaction";
+    private static final String ACCOUNT_TRANSACTION_PENDING = "pending";
+    private static final String ACCOUNT_TRANSACTION_PREVIOUS_NULL = "previous_null";
+    private static final String ACCOUNT_TRANSACTION_PREVIOUS_FINGERPRINT = "previous_fingerprint";
+    private static final String ACCOUNT_TRANSACTION_TARGET_NULL = "target_null";
+    private static final String ACCOUNT_TRANSACTION_TARGET_FINGERPRINT = "target_fingerprint";
     private static final String STATE_SECTION_ID = "mobile_section_id";
     private static final String STATE_SCROLL_Y = "mobile_scroll_y";
     private static final int MAX_CARDS_PER_SHELF = 12;
@@ -90,11 +112,19 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     private int pendingScrollY;
     private Disposable homeFallbackAction;
     private Disposable signInAction;
+    private Disposable accountSelectionAction;
     private AlertDialog signInDialog;
+    private AlertDialog accountSelectionProgress;
     private SignInService signInService;
     private BrowseProcessorManager fallbackBrowseProcessor;
     private boolean lastDeArrowTitles;
     private boolean lastDeArrowThumbnails;
+    private long accountSelectionSequence;
+    private String accountSelectionReadback = "not_verified";
+    private int accountCount;
+    private Account pendingPreviousAccount;
+    private Account pendingTargetAccount;
+    private boolean pendingAccountSelectionChanged;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -116,10 +146,11 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
             initialSelectionHandled = selectedSectionId != -1;
         }
 
+        signInService = YouTubeServiceManager.instance().getSignInService();
         presenter = BrowsePresenter.instance(this);
         presenter.setView(this);
+        recoverInterruptedAccountSelection();
         presenter.onViewInitialized();
-        signInService = YouTubeServiceManager.instance().getSignInService();
         MediaServiceManager.instance().addAccountListener(this);
         updateBadge();
         handleDeepLink(getIntent());
@@ -155,7 +186,13 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         disposeHomeFallback();
         fallbackBrowseProcessor.dispose();
         if (signInAction != null) signInAction.dispose();
+        if (isChangingConfigurations() && pendingAccountSelectionChanged) {
+            suspendAccountSelectionForConfigurationChange();
+        } else {
+            rollbackPendingAccountSelection();
+        }
         if (signInDialog != null) signInDialog.dismiss();
+        if (accountSelectionProgress != null) accountSelectionProgress.dismiss();
         MediaServiceManager.instance().removeAccountListener(this);
         presenter.onViewDestroyed();
         super.onDestroy();
@@ -419,6 +456,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
             startDeviceSignIn();
             return;
         }
+        accountCount = accounts.size();
         String[] labels = new String[accounts.size() + 2];
         int checked = accounts.size() + 1;
         for (int i = 0; i < accounts.size(); i++) {
@@ -434,13 +472,281 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
                 .setTitle(R.string.account)
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     dialog.dismiss();
-                    if (which < accounts.size()) signInService.selectAccount(accounts.get(which));
+                    if (which < accounts.size()) selectAccountWithReadback(accounts.get(which));
                     else if (which == accounts.size()) startDeviceSignIn();
-                    else signInService.selectAccount(null);
+                    else selectAccountWithReadback(null);
                 })
+                .setNeutralButton(R.string.account_status, (dialog, which) -> showAccountStatusDialog())
                 .setNegativeButton(android.R.string.cancel, null)
                 .create();
         holder[0].show();
+    }
+
+    private void selectAccountWithReadback(@Nullable Account target) {
+        if (signInService == null) return;
+        rollbackPendingAccountSelection();
+        final long sequence = ++accountSelectionSequence;
+        final Account previous = signInService.getSelectedAccount();
+        final boolean changed = !sameAccount(previous, target);
+        pendingPreviousAccount = previous;
+        pendingTargetAccount = target;
+        pendingAccountSelectionChanged = changed;
+        if (changed) writeAccountSelectionTransaction(previous, target);
+        accountSelectionReadback = "verifying";
+        showAccountSelectionProgress();
+        if (changed) {
+            applySharedAccountSelection(target);
+        } else {
+            YouTubeSignInService.instance().invalidateCache();
+        }
+
+        startAccountProviderProbe(sequence, target);
+    }
+
+    private void startAccountProviderProbe(long sequence, @Nullable Account target) {
+        Observable<Boolean> providerProbe = target == null
+                ? YouTubeServiceManager.instance().getContentService()
+                        .getSearchObserve(getString(R.string.signed_out_discovery_query))
+                        .map(result -> result != null && !result.isEmpty()).defaultIfEmpty(false)
+                : YouTubeServiceManager.instance().getContentService().getSubscriptionsObserve()
+                        .map(result -> result != null).defaultIfEmpty(false);
+        accountSelectionAction = providerProbe
+                .timeout(20, TimeUnit.SECONDS)
+                .subscribe(providerVerified -> runUi(() -> finishAccountSelection(sequence, target,
+                                providerVerified && sameAccount(target, signInService.getSelectedAccount()))),
+                        error -> runUi(() -> finishAccountSelection(sequence, target, false)));
+    }
+
+    private void applySharedAccountSelection(@Nullable Account account) {
+        signInService.selectAccount(account);
+        YouTubeSignInService.instance().invalidateCache();
+        Utils.updateChannels(this);
+        GeneralData generalData = GeneralData.instance(this);
+        if (generalData.getHistoryState() != GeneralData.HISTORY_AUTO) {
+            MediaServiceManager.instance().enableHistory(generalData.isHistoryEnabled());
+        }
+    }
+
+    private void finishAccountSelection(long sequence, @Nullable Account target, boolean verified) {
+        if (sequence != accountSelectionSequence || isFinishing() || isDestroyed()) return;
+        if (accountSelectionProgress != null) accountSelectionProgress.dismiss();
+        accountSelectionProgress = null;
+        accountSelectionAction = null;
+        if (verified) {
+            clearAccountSelectionTransaction();
+            clearPendingAccountSelection();
+            accountSelectionReadback = "verified";
+            Toast.makeText(this, R.string.account_selection_verified, Toast.LENGTH_LONG).show();
+            updateBadge();
+            presenter.refresh();
+            return;
+        }
+
+        boolean restored = pendingAccountSelectionChanged
+                && sameAccount(target, signInService.getSelectedAccount());
+        if (restored) applySharedAccountSelection(pendingPreviousAccount);
+        clearAccountSelectionTransaction();
+        clearPendingAccountSelection();
+        accountSelectionReadback = restored ? "failed_restored" : "failed_preserved";
+        Toast.makeText(this, restored ? R.string.account_selection_failed_restored
+                : R.string.account_selection_failed_preserved, Toast.LENGTH_LONG).show();
+        updateBadge();
+        presenter.refresh();
+    }
+
+    private void suspendAccountSelectionForConfigurationChange() {
+        sResumeAccountSelectionAfterConfigurationChange = true;
+        ++accountSelectionSequence;
+        if (accountSelectionAction != null) accountSelectionAction.dispose();
+        accountSelectionAction = null;
+    }
+
+    private void rollbackPendingAccountSelection() {
+        ++accountSelectionSequence;
+        if (accountSelectionAction != null) accountSelectionAction.dispose();
+        accountSelectionAction = null;
+        if (pendingAccountSelectionChanged
+                && sameAccount(pendingTargetAccount, signInService != null ? signInService.getSelectedAccount() : null)) {
+            applySharedAccountSelection(pendingPreviousAccount);
+        }
+        clearAccountSelectionTransaction();
+        clearPendingAccountSelection();
+    }
+
+    private void clearPendingAccountSelection() {
+        pendingPreviousAccount = null;
+        pendingTargetAccount = null;
+        pendingAccountSelectionChanged = false;
+    }
+
+    private void writeAccountSelectionTransaction(@Nullable Account previous, @Nullable Account target) {
+        SharedPreferences.Editor editor = accountTransactionPreferences().edit()
+                .putBoolean(ACCOUNT_TRANSACTION_PENDING, true)
+                .putBoolean(ACCOUNT_TRANSACTION_PREVIOUS_NULL, previous == null)
+                .putBoolean(ACCOUNT_TRANSACTION_TARGET_NULL, target == null);
+        if (previous != null) editor.putString(ACCOUNT_TRANSACTION_PREVIOUS_FINGERPRINT,
+                accountFingerprint(previous));
+        else editor.remove(ACCOUNT_TRANSACTION_PREVIOUS_FINGERPRINT);
+        if (target != null) editor.putString(ACCOUNT_TRANSACTION_TARGET_FINGERPRINT,
+                accountFingerprint(target));
+        else editor.remove(ACCOUNT_TRANSACTION_TARGET_FINGERPRINT);
+        editor.commit();
+    }
+
+    private void recoverInterruptedAccountSelection() {
+        SharedPreferences preferences = accountTransactionPreferences();
+        if (!preferences.getBoolean(ACCOUNT_TRANSACTION_PENDING, false)) {
+            sResumeAccountSelectionAfterConfigurationChange = false;
+            return;
+        }
+        Account current = signInService.getSelectedAccount();
+        boolean targetNull = preferences.getBoolean(ACCOUNT_TRANSACTION_TARGET_NULL, true);
+        String targetFingerprint = preferences.getString(ACCOUNT_TRANSACTION_TARGET_FINGERPRINT, null);
+        if (matchesStoredAccount(current, targetNull, targetFingerprint)) {
+            boolean previousNull = preferences.getBoolean(ACCOUNT_TRANSACTION_PREVIOUS_NULL, true);
+            String previousFingerprint = preferences.getString(
+                    ACCOUNT_TRANSACTION_PREVIOUS_FINGERPRINT, null);
+            Account previous = previousNull ? null : findUniqueAccountByFingerprint(previousFingerprint);
+            if (sResumeAccountSelectionAfterConfigurationChange) {
+                sResumeAccountSelectionAfterConfigurationChange = false;
+                pendingPreviousAccount = previous;
+                pendingTargetAccount = current;
+                pendingAccountSelectionChanged = !sameAccount(previous, current);
+                accountSelectionReadback = "verifying";
+                showAccountSelectionProgress();
+                YouTubeSignInService.instance().invalidateCache();
+                startAccountProviderProbe(++accountSelectionSequence, current);
+                return;
+            }
+            applySharedAccountSelection(previous);
+        }
+        sResumeAccountSelectionAfterConfigurationChange = false;
+        clearAccountSelectionTransaction();
+    }
+
+    @Nullable
+    private Account findUniqueAccountByFingerprint(@Nullable String fingerprint) {
+        List<Account> accounts = signInService.getAccounts();
+        if (accounts == null || fingerprint == null) return null;
+        Account match = null;
+        for (Account account : accounts) {
+            if (account != null && TextUtils.equals(fingerprint, accountFingerprint(account))) {
+                if (match != null) return null;
+                match = account;
+            }
+        }
+        return match;
+    }
+
+    private boolean matchesStoredAccount(@Nullable Account account, boolean storedNull,
+                                                @Nullable String storedFingerprint) {
+        return storedNull ? account == null
+                : account != null && TextUtils.equals(storedFingerprint, accountFingerprint(account));
+    }
+
+    private String accountFingerprint(Account account) {
+        String value = account.getId() + "\u001f" + fingerprintPart(account.getName()) + "\u001f"
+                + fingerprintPart(account.getEmail()) + "\u001f"
+                + fingerprintPart(account.getAvatarImageUrl());
+        if (account instanceof YouTubeAccount) {
+            YouTubeAccount youtubeAccount = (YouTubeAccount) account;
+            value += "\u001f" + fingerprintPart(youtubeAccount.getPageIdToken())
+                    + "\u001f" + fingerprintPart(youtubeAccount.getChannelName());
+        }
+        try {
+            MessageDigest messageDigest = MessageDigest.getInstance("SHA-256");
+            messageDigest.update(accountFingerprintSalt());
+            byte[] digest = messageDigest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte item : digest) result.append(String.format("%02x", item & 0xff));
+            return result.toString();
+        } catch (NoSuchAlgorithmException error) {
+            throw new IllegalStateException("SHA-256 unavailable", error);
+        }
+    }
+
+    private byte[] accountFingerprintSalt() {
+        synchronized (ACCOUNT_FINGERPRINT_LOCK) {
+            SharedPreferences preferences = getSharedPreferences(ACCOUNT_FINGERPRINT_PREFS, MODE_PRIVATE);
+            String encoded = preferences.getString(ACCOUNT_FINGERPRINT_SALT, null);
+            if (encoded == null) {
+                byte[] generated = new byte[32];
+                new SecureRandom().nextBytes(generated);
+                encoded = Base64.encodeToString(generated, Base64.NO_WRAP);
+                preferences.edit().putString(ACCOUNT_FINGERPRINT_SALT, encoded).commit();
+            }
+            return Base64.decode(encoded, Base64.NO_WRAP);
+        }
+    }
+
+    private static String fingerprintPart(@Nullable String value) {
+        return value == null ? "-1:" : value.length() + ":" + value;
+    }
+
+    private SharedPreferences accountTransactionPreferences() {
+        return getSharedPreferences(ACCOUNT_TRANSACTION_PREFS, MODE_PRIVATE);
+    }
+
+    private void clearAccountSelectionTransaction() {
+        accountTransactionPreferences().edit().clear().commit();
+    }
+
+    private void showAccountSelectionProgress() {
+        if (accountSelectionProgress != null) accountSelectionProgress.dismiss();
+        accountSelectionProgress = new AlertDialog.Builder(this)
+                .setTitle(R.string.account)
+                .setMessage(R.string.account_selection_verifying)
+                .setCancelable(false)
+                .create();
+        accountSelectionProgress.show();
+    }
+
+    private void showAccountStatusDialog() {
+        Account selected = signInService != null ? signInService.getSelectedAccount() : null;
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.account_status)
+                .setMessage(getString(R.string.account_status_value, accountCount,
+                        getString(selected != null ? R.string.account_selection_selected
+                                : R.string.account_selection_without_account),
+                        accountSelectionReadbackLabel()))
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private String accountSelectionReadbackLabel() {
+        if (TextUtils.equals("verified", accountSelectionReadback)) {
+            return getString(R.string.account_readback_verified);
+        }
+        if (TextUtils.equals("verifying", accountSelectionReadback)) {
+            return getString(R.string.account_readback_verifying);
+        }
+        if (TextUtils.equals("failed_restored", accountSelectionReadback)) {
+            return getString(R.string.account_readback_failed_restored);
+        }
+        if (TextUtils.equals("failed_preserved", accountSelectionReadback)) {
+            return getString(R.string.account_readback_failed_preserved);
+        }
+        return getString(R.string.account_readback_not_verified);
+    }
+
+    private boolean sameAccount(@Nullable Account first, @Nullable Account second) {
+        if (first == second) return true;
+        if (first == null || second == null) return false;
+        String fingerprint = accountFingerprint(first);
+        return TextUtils.equals(fingerprint, accountFingerprint(second))
+                && isUniqueAccountFingerprint(fingerprint);
+    }
+
+    private boolean isUniqueAccountFingerprint(String fingerprint) {
+        List<Account> accounts = signInService != null ? signInService.getAccounts() : null;
+        if (accounts == null) return false;
+        int matches = 0;
+        for (Account account : accounts) {
+            if (account != null && TextUtils.equals(fingerprint, accountFingerprint(account)) && ++matches > 1) {
+                return false;
+            }
+        }
+        return matches == 1;
     }
 
     private void startDeviceSignIn() {
