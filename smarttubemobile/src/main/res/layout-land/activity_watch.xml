@@ -80,12 +80,23 @@
             android:textColor="@color/smarttube_text_secondary"
             android:textSize="12sp" />
 
-        <SeekBar
-            android:id="@+id/watch_progress"
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:layout_marginTop="4dp"
-            android:contentDescription="@string/playback_progress" />
+            >
+
+            <com.liskovsoft.smartyoutubetv2.mobile.SponsorMarkerView
+                android:id="@+id/watch_sponsor_markers"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <SeekBar
+                android:id="@+id/watch_progress"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@string/playback_progress" />
+        </FrameLayout>
 
         <LinearLayout
             android:layout_width="match_parent"

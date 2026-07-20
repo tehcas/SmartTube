@@ -45,6 +45,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItem;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemStoryboard;
+import com.liskovsoft.mediaserviceinterfaces.data.SponsorSegment;
 import com.liskovsoft.sharedutils.rx.RxHelper;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
@@ -58,6 +59,7 @@ import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.TrackSelectorUti
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.track.MediaTrack;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import java.util.ArrayList;
@@ -135,6 +137,20 @@ public final class MobilePlaybackService extends Service implements Player.Event
         }
     }
 
+    static final class SponsorEvent {
+        final long sequence;
+        final String category;
+        final long endMs;
+        final boolean confirmationRequired;
+
+        SponsorEvent(long sequence, String category, long endMs, boolean confirmationRequired) {
+            this.sequence = sequence;
+            this.category = category;
+            this.endMs = endMs;
+            this.confirmationRequired = confirmationRequired;
+        }
+    }
+
     static final class SuggestionOption {
         final String section;
         final String videoId;
@@ -208,6 +224,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         @Override
         public void run() {
             persistProgress(false);
+            checkSponsorSegment();
             notifyListeners();
             handler.postDelayed(this, 1_000L);
         }
@@ -226,6 +243,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private MediaSessionCompat mediaSession;
     private Disposable formatInfoAction;
     private Disposable metadataAction;
+    private Disposable sponsorSegmentsAction;
     private int queueIndex = -1;
     private Video currentVideo;
     private String playbackError;
@@ -242,6 +260,12 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private int likeStatus = MediaItemMetadata.LIKE_STATUS_INDIFFERENT;
     private boolean subscribed;
     private String channelId;
+    private List<SponsorSegment> sponsorSegments = Collections.emptyList();
+    private SponsorSegment pendingSponsorSegment;
+    private SponsorEvent sponsorEvent;
+    private long sponsorEventSequence;
+    private String handledSponsorKey;
+    private String lastSponsorSkipSummary;
     private long sleepTimerEndRealtimeMs;
 
     static void load(Context context, Video video) {
@@ -385,6 +409,11 @@ public final class MobilePlaybackService extends Service implements Player.Event
         commentsKey = null;
         liveChatKey = null;
         suggestions = Collections.emptyList();
+        sponsorSegments = Collections.emptyList();
+        pendingSponsorSegment = null;
+        sponsorEvent = null;
+        handledSponsorKey = null;
+        lastSponsorSkipSummary = null;
         sourceType = "resolving";
         likeStatus = MediaItemMetadata.LIKE_STATUS_INDIFFERENT;
         subscribed = false;
@@ -395,6 +424,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
 
         RxHelper.disposeActions(formatInfoAction);
         RxHelper.disposeActions(metadataAction);
+        RxHelper.disposeActions(sponsorSegmentsAction);
         formatInfoAction = YouTubeServiceManager.instance()
                 .getMediaItemService()
                 .getFormatInfoObserve(entry.videoId)
@@ -538,6 +568,37 @@ public final class MobilePlaybackService extends Service implements Player.Event
     int getLikeStatus() { return likeStatus; }
     boolean isSubscribed() { return subscribed; }
     @Nullable String getChannelId() { return channelId; }
+    List<SponsorSegment> getSponsorSegments() { return sponsorSegments; }
+    @Nullable SponsorEvent getSponsorEvent() { return sponsorEvent; }
+    @Nullable String getLastSponsorSkipSummary() { return lastSponsorSkipSummary; }
+
+    void acknowledgeSponsorEvent(long sequence) {
+        if (sponsorEvent != null && sponsorEvent.sequence == sequence && !sponsorEvent.confirmationRequired) {
+            sponsorEvent = null;
+        }
+    }
+
+    void confirmSponsorSkip(long sequence) {
+        if (sponsorEvent == null || sponsorEvent.sequence != sequence || pendingSponsorSegment == null) return;
+        lastSponsorSkipSummary = pendingSponsorSegment.getCategory() + " confirmed→"
+                + pendingSponsorSegment.getEndMs() + " ms";
+        seekTo(Math.min(pendingSponsorSegment.getEndMs(), getDurationMs()));
+        pendingSponsorSegment = null;
+        sponsorEvent = null;
+    }
+
+    void dismissSponsorSkip(long sequence) {
+        if (sponsorEvent == null || sponsorEvent.sequence != sequence) return;
+        pendingSponsorSegment = null;
+        sponsorEvent = null;
+    }
+
+    void reloadSponsorBlock() {
+        pendingSponsorSegment = null;
+        sponsorEvent = null;
+        handledSponsorKey = null;
+        loadSponsorSegments();
+    }
 
     void applyMetadataReadback(MediaItemMetadata metadata) {
         if (metadata != null && currentVideo != null
@@ -661,7 +722,79 @@ public final class MobilePlaybackService extends Service implements Player.Event
             }
         }
         chapters = Collections.unmodifiableList(unique);
+        loadSponsorSegments();
         notifyListeners();
+    }
+
+    private void loadSponsorSegments() {
+        RxHelper.disposeActions(sponsorSegmentsAction);
+        SponsorBlockData data = SponsorBlockData.instance(this);
+        if (currentVideo == null || TextUtils.isEmpty(currentVideo.videoId)
+                || currentVideo.isLive || !data.isSponsorBlockEnabled()
+                || data.isChannelExcluded(channelId) || data.getEnabledCategories().isEmpty()) {
+            sponsorSegments = Collections.emptyList();
+            notifyListeners();
+            return;
+        }
+        final String requestedVideoId = currentVideo.videoId;
+        sponsorSegmentsAction = YouTubeServiceManager.instance().getMediaItemService()
+                .getSponsorSegmentsObserve(requestedVideoId, data.getEnabledCategories())
+                .subscribe(segments -> handler.post(() -> {
+                    if (currentVideo == null || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
+                    sponsorSegments = segments == null ? Collections.emptyList()
+                            : Collections.unmodifiableList(new ArrayList<>(segments));
+                    notifyListeners();
+                }), error -> handler.post(() -> {
+                    if (currentVideo != null && TextUtils.equals(requestedVideoId, currentVideo.videoId)) {
+                        sponsorSegments = Collections.emptyList();
+                        notifyListeners();
+                    }
+                }));
+    }
+
+    private void checkSponsorSegment() {
+        if (player == null || !isPlaying() || sponsorSegments.isEmpty() || currentVideo == null) return;
+        SponsorBlockData data = SponsorBlockData.instance(this);
+        if (!data.isSponsorBlockEnabled() || data.isChannelExcluded(channelId)) return;
+        long positionMs = getPositionMs();
+        if (pendingSponsorSegment != null
+                && (positionMs < pendingSponsorSegment.getStartMs() || positionMs > pendingSponsorSegment.getEndMs())) {
+            pendingSponsorSegment = null;
+            sponsorEvent = null;
+        }
+        SponsorSegment found = null;
+        for (SponsorSegment segment : sponsorSegments) {
+            if (!SponsorSegment.ACTION_SKIP.equals(segment.getAction())) continue;
+            long entryWindowMs = (long) (2_000L * Math.max(1f, getPlaybackSpeed()));
+            if (positionMs >= segment.getStartMs()
+                    && positionMs <= Math.min(segment.getEndMs(), segment.getStartMs() + entryWindowMs)) {
+                found = segment;
+                break;
+            }
+        }
+        if (found == null) {
+            handledSponsorKey = null;
+            return;
+        }
+        String key = found.getStartMs() + ":" + found.getEndMs() + ":" + found.getCategory();
+        if (TextUtils.equals(key, handledSponsorKey)) return;
+        handledSponsorKey = key;
+        long skipDurationMs = Math.min(found.getEndMs(), getDurationMs()) - positionMs;
+        if (skipDurationMs < data.getIgnoredDurationMs()) return;
+        int action = data.getAction(found.getCategory());
+        if (action == SponsorBlockData.ACTION_DO_NOTHING || action == SponsorBlockData.ACTION_UNDEFINED) return;
+        if (action == SponsorBlockData.ACTION_SHOW_DIALOG) {
+            pendingSponsorSegment = found;
+            sponsorEvent = new SponsorEvent(++sponsorEventSequence, found.getCategory(), found.getEndMs(), true);
+            return;
+        }
+        if (action == SponsorBlockData.ACTION_SKIP_ONLY || action == SponsorBlockData.ACTION_SKIP_WITH_TOAST) {
+            lastSponsorSkipSummary = found.getCategory() + " " + positionMs + "→" + found.getEndMs() + " ms";
+            seekTo(Math.min(found.getEndMs(), getDurationMs()));
+            if (action == SponsorBlockData.ACTION_SKIP_WITH_TOAST) {
+                sponsorEvent = new SponsorEvent(++sponsorEventSequence, found.getCategory(), found.getEndMs(), false);
+            }
+        }
     }
 
     private static long parseChapterTime(String value) {
@@ -924,6 +1057,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         persistProgress(true);
         RxHelper.disposeActions(formatInfoAction);
         RxHelper.disposeActions(metadataAction);
+        RxHelper.disposeActions(sponsorSegmentsAction);
         listeners.clear();
         if (mediaSession != null) {
             mediaSession.setActive(false);

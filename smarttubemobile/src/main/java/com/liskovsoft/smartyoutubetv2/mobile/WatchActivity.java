@@ -37,6 +37,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 
 import com.google.android.exoplayer2.ui.PlayerView;
 import com.google.android.exoplayer2.text.Cue;
@@ -52,11 +53,13 @@ import com.liskovsoft.mediaserviceinterfaces.data.MediaItemStoryboard;
 import com.liskovsoft.mediaserviceinterfaces.MediaItemService;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
 import com.liskovsoft.mediaserviceinterfaces.data.PlaylistInfo;
+import com.liskovsoft.mediaserviceinterfaces.data.SponsorSegment;
 import com.liskovsoft.mediaserviceinterfaces.data.CommentGroup;
 import com.liskovsoft.mediaserviceinterfaces.data.CommentItem;
 import com.liskovsoft.mediaserviceinterfaces.data.ChatItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import io.reactivex.disposables.Disposable;
@@ -101,6 +104,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private Button pipButton;
     private Button actionsButton;
     private SeekBar progress;
+    private SponsorMarkerView sponsorMarkers;
     private StoryboardPreviewView storyboardPreview;
     private View playerContainer;
     private View controlsOverlay;
@@ -124,6 +128,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private Disposable accountAction;
     private AlertDialog accountProgressDialog;
     private AlertDialog liveChatDialog;
+    private AlertDialog sponsorDialog;
+    private long lastSponsorEventSequence;
     private final List<String> liveChatLines = new ArrayList<>();
     private SharedPreferences controlPreferences;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
@@ -293,6 +299,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         pipButton = findViewById(R.id.watch_pip);
         actionsButton = findViewById(R.id.watch_actions);
         progress = findViewById(R.id.watch_progress);
+        sponsorMarkers = findViewById(R.id.watch_sponsor_markers);
         storyboardPreview = findViewById(R.id.watch_storyboard_preview);
         playerContainer = findViewById(R.id.watch_player_container);
         normalPlayerContainerHeight = playerContainer.getLayoutParams().height;
@@ -379,6 +386,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 getString(R.string.related_videos),
                 getString(R.string.video_qr_code),
                 getString(R.string.debug_statistics),
+                getString(R.string.sponsorblock_settings),
                 getString(R.string.account_actions)
         };
         new AlertDialog.Builder(this)
@@ -397,7 +405,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                         case 9: showSuggestionsDialog(); break;
                         case 10: showQrCodeDialog(); break;
                         case 11: showDebugStatisticsDialog(); break;
-                        case 12: showAuthenticatedActionsDialog(); break;
+                        case 12: showSponsorBlockSettingsDialog(); break;
+                        case 13: showAuthenticatedActionsDialog(); break;
                         default: break;
                     }
                 })
@@ -509,12 +518,147 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 stats.windowIndex, stats.sourceType, formatTime(stats.positionMs), formatTime(stats.durationMs),
                 formatTime(stats.bufferedMs), stats.bufferedPercent, stats.videoFormat, stats.audioFormat,
                 stats.renderedVideoBuffers, stats.droppedVideoBuffers, stats.skippedVideoBuffers,
-                stats.maxConsecutiveDropped, playbackService.getQueueIndex() + 1, playbackService.getQueueSize());
+                stats.maxConsecutiveDropped, playbackService.getQueueIndex() + 1, playbackService.getQueueSize())
+                + "\n\nSponsorBlock segments: " + playbackService.getSponsorSegments().size()
+                + "\nLast SponsorBlock skip: " + fallback(playbackService.getLastSponsorSkipSummary());
         new AlertDialog.Builder(this)
                 .setTitle(R.string.debug_statistics)
                 .setMessage(message)
                 .setPositiveButton(android.R.string.ok, null)
                 .show();
+    }
+
+    private void showSponsorBlockSettingsDialog() {
+        if (playbackService == null) return;
+        SponsorBlockData data = SponsorBlockData.instance(this);
+        String channelId = playbackService.getChannelId();
+        boolean excluded = !TextUtils.isEmpty(channelId) && data.isChannelExcluded(channelId);
+        String[] choices = {
+                getString(R.string.sponsorblock_enabled,
+                        getString(data.isSponsorBlockEnabled() ? R.string.state_on : R.string.state_off)),
+                getString(excluded ? R.string.sponsorblock_channel_excluded
+                        : R.string.sponsorblock_channel_included),
+                getString(R.string.sponsorblock_category_actions),
+                getString(R.string.sponsorblock_marker_categories),
+                getString(R.string.sponsorblock_segment_count, playbackService.getSponsorSegments().size())
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sponsorblock_settings)
+                .setItems(choices, (dialog, which) -> {
+                    if (which == 0) {
+                        data.setSponsorBlockEnabled(!data.isSponsorBlockEnabled());
+                        playbackService.reloadSponsorBlock();
+                        showSponsorBlockSettingsDialog();
+                    } else if (which == 1) {
+                        if (TextUtils.isEmpty(channelId)) {
+                            Toast.makeText(this, R.string.sponsorblock_channel_unavailable, Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        data.toggleExcludeChannel(channelId);
+                        playbackService.reloadSponsorBlock();
+                        showSponsorBlockSettingsDialog();
+                    } else if (which == 2) {
+                        showSponsorCategoryActionsDialog();
+                    } else if (which == 3) {
+                        showSponsorMarkerCategoriesDialog();
+                    } else {
+                        showSponsorSegmentsDialog();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showSponsorCategoryActionsDialog() {
+        SponsorBlockData data = SponsorBlockData.instance(this);
+        List<String> categories = new ArrayList<>(data.getAllCategories());
+        String[] labels = new String[categories.size()];
+        for (int i = 0; i < categories.size(); i++) {
+            String category = categories.get(i);
+            labels[i] = sponsorCategoryLabel(category) + " — " + sponsorActionLabel(data.getAction(category));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sponsorblock_category_actions)
+                .setItems(labels, (dialog, which) -> showSponsorActionDialog(categories.get(which)))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showSponsorActionDialog(String category) {
+        SponsorBlockData data = SponsorBlockData.instance(this);
+        int[] values = {
+                SponsorBlockData.ACTION_DO_NOTHING,
+                SponsorBlockData.ACTION_SKIP_ONLY,
+                SponsorBlockData.ACTION_SKIP_WITH_TOAST,
+                SponsorBlockData.ACTION_SHOW_DIALOG
+        };
+        String[] labels = {
+                getString(R.string.sponsorblock_action_none),
+                getString(R.string.sponsorblock_action_skip),
+                getString(R.string.sponsorblock_action_toast),
+                getString(R.string.sponsorblock_action_confirm)
+        };
+        int checked = 0;
+        for (int i = 0; i < values.length; i++) if (values[i] == data.getAction(category)) checked = i;
+        new AlertDialog.Builder(this)
+                .setTitle(sponsorCategoryLabel(category))
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    data.setAction(category, values[which]);
+                    playbackService.reloadSponsorBlock();
+                    dialog.dismiss();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showSponsorMarkerCategoriesDialog() {
+        SponsorBlockData data = SponsorBlockData.instance(this);
+        List<String> categories = new ArrayList<>(data.getAllCategories());
+        String[] labels = new String[categories.size()];
+        boolean[] selected = new boolean[categories.size()];
+        for (int i = 0; i < categories.size(); i++) {
+            labels[i] = sponsorCategoryLabel(categories.get(i));
+            selected[i] = data.isColorMarkerEnabled(categories.get(i));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sponsorblock_marker_categories)
+                .setMultiChoiceItems(labels, selected, (dialog, which, checked) -> {
+                    if (checked) data.enableColorMarker(categories.get(which));
+                    else data.disableColorMarker(categories.get(which));
+                    playbackService.reloadSponsorBlock();
+                })
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showSponsorSegmentsDialog() {
+        List<SponsorSegment> segments = playbackService.getSponsorSegments();
+        if (segments.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.sponsorblock_settings)
+                    .setMessage(R.string.sponsorblock_no_segments)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        String[] labels = new String[segments.size()];
+        for (int i = 0; i < segments.size(); i++) {
+            SponsorSegment segment = segments.get(i);
+            labels[i] = sponsorCategoryLabel(segment.getCategory()) + " • "
+                    + formatTime(segment.getStartMs()) + "–" + formatTime(segment.getEndMs());
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.sponsorblock_segment_count, segments.size()))
+                .setItems(labels, (dialog, which) -> playbackService.seekTo(segments.get(which).getStartMs()))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private String sponsorActionLabel(int action) {
+        if (action == SponsorBlockData.ACTION_SKIP_ONLY) return getString(R.string.sponsorblock_action_skip);
+        if (action == SponsorBlockData.ACTION_SKIP_WITH_TOAST) return getString(R.string.sponsorblock_action_toast);
+        if (action == SponsorBlockData.ACTION_SHOW_DIALOG) return getString(R.string.sponsorblock_action_confirm);
+        return getString(R.string.sponsorblock_action_none);
     }
 
     private void showAuthenticatedActionsDialog() {
@@ -1349,6 +1493,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         liveChatAction = null;
         if (liveChatDialog != null) liveChatDialog.setOnDismissListener(null);
         liveChatDialog = null;
+        if (sponsorDialog != null) {
+            sponsorDialog.setOnDismissListener(null);
+            sponsorDialog.dismiss();
+        }
+        sponsorDialog = null;
         if (hadLiveChat) PlayerData.instance(this).setLiveChatEnabled(false);
         if (storyboardTarget != null) Glide.with(this).clear(storyboardTarget);
         storyboardTarget = null;
@@ -1402,10 +1551,56 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         if (!userSeeking && durationMs > 0) {
             progress.setProgress((int) Math.min(progress.getMax(), positionMs * progress.getMax() / durationMs));
         }
+        renderSponsorBlock(durationMs);
         if (!playbackService.isPlaying()) showAndScheduleControls();
         else if (isLandscape && controlsOverlay.getVisibility() == View.VISIBLE && !controlsHideScheduled) {
             showAndScheduleControls();
         }
+    }
+
+    private void renderSponsorBlock(long durationMs) {
+        SponsorBlockData data = SponsorBlockData.instance(this);
+        List<SponsorMarkerView.Marker> markers = new ArrayList<>();
+        for (SponsorSegment segment : playbackService.getSponsorSegments()) {
+            if (!data.isColorMarkerEnabled(segment.getCategory())) continue;
+            Integer colorRes = data.getColorRes(segment.getCategory());
+            if (colorRes != null) {
+                markers.add(new SponsorMarkerView.Marker(segment.getStartMs(), segment.getEndMs(),
+                        ContextCompat.getColor(this, colorRes)));
+            }
+        }
+        sponsorMarkers.setMarkers(markers, durationMs);
+
+        MobilePlaybackService.SponsorEvent event = playbackService.getSponsorEvent();
+        if (event == null) {
+            if (sponsorDialog != null) sponsorDialog.dismiss();
+            return;
+        }
+        if (event.sequence == lastSponsorEventSequence) return;
+        lastSponsorEventSequence = event.sequence;
+        String category = sponsorCategoryLabel(event.category);
+        if (!event.confirmationRequired) {
+            Toast.makeText(this, getString(R.string.sponsor_skipped, category), Toast.LENGTH_LONG).show();
+            playbackService.acknowledgeSponsorEvent(event.sequence);
+            return;
+        }
+        if (sponsorDialog != null) sponsorDialog.dismiss();
+        sponsorDialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.content_block_provider)
+                .setMessage(getString(R.string.sponsor_confirm_skip, category))
+                .setPositiveButton(R.string.skip_segment,
+                        (dialog, which) -> playbackService.confirmSponsorSkip(event.sequence))
+                .setNegativeButton(android.R.string.cancel,
+                        (dialog, which) -> playbackService.dismissSponsorSkip(event.sequence))
+                .setOnCancelListener(dialog -> playbackService.dismissSponsorSkip(event.sequence))
+                .create();
+        sponsorDialog.setOnDismissListener(dialog -> sponsorDialog = null);
+        sponsorDialog.show();
+    }
+
+    private String sponsorCategoryLabel(String category) {
+        Integer labelRes = SponsorBlockData.instance(this).getLocalizedRes(category);
+        return labelRes != null ? getString(labelRes) : fallback(category);
     }
 
     private void renderPlaybackOptions() {
