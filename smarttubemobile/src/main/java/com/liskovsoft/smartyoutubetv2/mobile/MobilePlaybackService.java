@@ -837,7 +837,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
             if (currentVideo != null && TextUtils.equals(requestedVideoId, currentVideo.videoId)
                     && requestSequence == dislikeRequestSequence
                     && TextUtils.equals("loading", publicRatingState)) {
-                markDislikeDataUnavailable(requestedVideoId, requestSequence);
+                timeoutDislikeData(requestedVideoId, requestSequence);
             }
         }, 12_000L);
     }
@@ -845,13 +845,12 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private void applyDislikeData(String requestedVideoId, long requestSequence, DislikeData data) {
         if (currentVideo == null || requestSequence != dislikeRequestSequence
                 || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
-        if (data == null || !TextUtils.equals(requestedVideoId, data.getVideoId())
-                || (TextUtils.isEmpty(data.getLikeCount()) && TextUtils.isEmpty(data.getDislikeCount()))) {
+        if (data == null || !TextUtils.equals(requestedVideoId, data.getVideoId())) {
             markDislikeDataUnavailable(requestedVideoId, requestSequence);
             return;
         }
-        publicLikeCount = data.getLikeCount();
-        publicDislikeCount = data.getDislikeCount();
+        publicLikeCount = TextUtils.isEmpty(data.getLikeCount()) ? "0" : data.getLikeCount();
+        publicDislikeCount = TextUtils.isEmpty(data.getDislikeCount()) ? "0" : data.getDislikeCount();
         publicViewCount = data.getViewCount();
         publicRatingState = "available";
         currentVideo.sync(data);
@@ -861,6 +860,18 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private void markDislikeDataUnavailable(String requestedVideoId, long requestSequence) {
         if (currentVideo == null || requestSequence != dislikeRequestSequence
                 || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
+        publicLikeCount = null;
+        publicDislikeCount = null;
+        publicViewCount = 0;
+        publicRatingState = "unavailable";
+        notifyListeners();
+    }
+
+    private void timeoutDislikeData(String requestedVideoId, long requestSequence) {
+        if (currentVideo == null || requestSequence != dislikeRequestSequence
+                || !TextUtils.equals(requestedVideoId, currentVideo.videoId)) return;
+        RxHelper.disposeActions(dislikeDataAction);
+        dislikeRequestSequence++;
         publicLikeCount = null;
         publicDislikeCount = null;
         publicViewCount = 0;
