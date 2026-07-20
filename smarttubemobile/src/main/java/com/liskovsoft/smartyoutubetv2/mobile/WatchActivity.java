@@ -3,6 +3,7 @@ package com.liskovsoft.smartyoutubetv2.mobile;
 import android.app.Activity;
 import android.Manifest;
 import android.app.AlertDialog;
+import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -20,9 +21,11 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.text.TextUtils;
 import android.util.TypedValue;
+import android.util.Rational;
 
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageButton;
@@ -69,8 +72,10 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private Button speedButton;
     private Button captionsButton;
     private Button chaptersButton;
+    private Button pipButton;
     private SeekBar progress;
     private StoryboardPreviewView storyboardPreview;
+    private View playerContainer;
     private View controlsOverlay;
     private ImageButton backButton;
     private MobilePlaybackService playbackService;
@@ -86,6 +91,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private int pendingStoryboardColumns = 1;
     private long pendingStoryboardPositionMs;
     private int seekIncrementMs;
+    private int normalPlayerContainerHeight;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable hideStoryboard = () -> storyboardPreview.setVisibility(View.GONE);
     private final Runnable hideControls = () -> {
@@ -170,6 +176,50 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         }
     }
 
+    private void requestPictureInPicture() {
+        if (Build.VERSION.SDK_INT < 26
+                || !getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+                || playbackService == null) {
+            Toast.makeText(this, R.string.picture_in_picture_unavailable, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            PictureInPictureParams params = new PictureInPictureParams.Builder()
+                    .setAspectRatio(new Rational(16, 9))
+                    .build();
+            enterPictureInPictureMode(params);
+        } catch (IllegalStateException error) {
+            Toast.makeText(this, R.string.picture_in_picture_unavailable, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (Build.VERSION.SDK_INT >= 26 && playbackService != null
+                && playbackService.isPlaying() && !isInPictureInPictureMode()) {
+            requestPictureInPicture();
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean inPictureInPictureMode) {
+        super.onPictureInPictureModeChanged(inPictureInPictureMode);
+        backButton.setVisibility(inPictureInPictureMode ? View.GONE : View.VISIBLE);
+        controlsOverlay.setVisibility(inPictureInPictureMode ? View.GONE : View.VISIBLE);
+        storyboardPreview.setVisibility(View.GONE);
+        if (!isLandscape) {
+            ViewGroup.LayoutParams params = playerContainer.getLayoutParams();
+            params.height = inPictureInPictureMode
+                    ? ViewGroup.LayoutParams.MATCH_PARENT : normalPlayerContainerHeight;
+            playerContainer.setLayoutParams(params);
+        }
+        if (!inPictureInPictureMode) {
+            applySystemUi();
+            renderPlaybackState();
+        }
+    }
+
     private void requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -202,8 +252,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         speedButton = findViewById(R.id.watch_speed);
         captionsButton = findViewById(R.id.watch_captions);
         chaptersButton = findViewById(R.id.watch_chapters);
+        pipButton = findViewById(R.id.watch_pip);
         progress = findViewById(R.id.watch_progress);
         storyboardPreview = findViewById(R.id.watch_storyboard_preview);
+        playerContainer = findViewById(R.id.watch_player_container);
+        normalPlayerContainerHeight = playerContainer.getLayoutParams().height;
         controlsOverlay = findViewById(R.id.watch_controls_overlay);
         backButton = findViewById(R.id.watch_back);
         seekIncrementMs = PlayerData.instance(this).getSeekIncrementMs();
@@ -239,6 +292,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         captionsButton.setOnClickListener(view -> showCaptionsDialog());
         captionsButton.setOnLongClickListener(view -> showCaptionSizeDialog());
         chaptersButton.setOnClickListener(view -> showChaptersDialog());
+        pipButton.setOnClickListener(view -> requestPictureInPicture());
         rewindButton.setOnLongClickListener(view -> showSeekIncrementDialog());
         forwardButton.setOnLongClickListener(view -> showSeekIncrementDialog());
         playerView.setOnClickListener(view -> toggleLandscapeControls());
@@ -653,7 +707,9 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
 
     private static String shortTrackLabel(String label) {
         int separator = label.indexOf(',');
-        return separator > 0 ? label.substring(0, separator) : label;
+        String shortLabel = separator > 0 ? label.substring(0, separator) : label;
+        int presetSuffix = shortLabel.indexOf(") ");
+        return presetSuffix >= 0 ? shortLabel.substring(presetSuffix + 2) : shortLabel;
     }
 
     private static String formatSpeed(float speed) {

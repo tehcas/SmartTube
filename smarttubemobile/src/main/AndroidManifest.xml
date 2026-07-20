@@ -59,7 +59,10 @@
         <activity
             android:name=".WatchActivity"
             android:exported="false"
-            android:screenOrientation="unspecified" />
+            android:resizeableActivity="true"
+            android:screenOrientation="unspecified"
+            android:supportsPictureInPicture="true"
+            tools:targetApi="24" />
 
         <activity android:name=".SearchActivity" android:exported="false" />
         <activity android:name=".ChannelActivity" android:exported="false" />

@@ -67,6 +67,8 @@
     <string name="chapters">Chapters</string>
     <string name="chapters_count">Chapters (%1$d)</string>
     <string name="chapters_short_count">Ch. %1$d</string>
+    <string name="picture_in_picture_short">PiP</string>
+    <string name="picture_in_picture_unavailable">Picture-in-picture is unavailable on this device</string>
     <string name="playback_queue">SmartTube playback queue</string>
     <string name="queue_position">Queue %1$d of %2$d</string>
     <string name="playback_progress">Playback progress</string>

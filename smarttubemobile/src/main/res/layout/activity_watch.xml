@@ -13,6 +13,7 @@
         android:paddingBottom="32dp">
 
         <FrameLayout
+            android:id="@+id/watch_player_container"
             android:layout_width="match_parent"
             android:layout_height="240dp"
             android:background="@color/smarttube_surface">
@@ -230,9 +231,21 @@
                 android:layout_width="0dp"
                 android:layout_height="48dp"
                 android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
                 android:layout_weight="1"
                 android:minWidth="0dp"
                 android:text="@string/chapters"
+                android:textAllCaps="false"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/watch_pip"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/picture_in_picture_short"
                 android:textAllCaps="false"
                 android:textSize="13sp" />
         </LinearLayout>
