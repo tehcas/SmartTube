@@ -73,6 +73,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private Button captionsButton;
     private Button chaptersButton;
     private Button pipButton;
+    private Button actionsButton;
     private SeekBar progress;
     private StoryboardPreviewView storyboardPreview;
     private View playerContainer;
@@ -145,6 +146,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         applySystemUi();
         setContentView(R.layout.activity_watch);
         bindViews();
+        playerView.setResizeMode(PlayerData.instance(this).getResizeMode());
         bindActions();
         renderIntent(getIntent());
         requestNotificationPermissionIfNeeded();
@@ -253,6 +255,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         captionsButton = findViewById(R.id.watch_captions);
         chaptersButton = findViewById(R.id.watch_chapters);
         pipButton = findViewById(R.id.watch_pip);
+        actionsButton = findViewById(R.id.watch_actions);
         progress = findViewById(R.id.watch_progress);
         storyboardPreview = findViewById(R.id.watch_storyboard_preview);
         playerContainer = findViewById(R.id.watch_player_container);
@@ -264,7 +267,6 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     }
 
     private void bindActions() {
-        Button copyLink = findViewById(R.id.copy_watch_link);
         backButton.setOnClickListener(view -> finish());
         previousButton.setOnClickListener(view -> {
             if (playbackService != null) playbackService.skipPrevious();
@@ -323,13 +325,144 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 showAndScheduleControls();
             }
         });
-        copyLink.setOnClickListener(view -> {
-            String videoId = currentVideoId();
-            if (TextUtils.isEmpty(videoId)) return;
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.video_link), "https://youtu.be/" + videoId));
-            Toast.makeText(this, R.string.link_copied, Toast.LENGTH_SHORT).show();
-        });
+        actionsButton.setOnClickListener(view -> showActionsDialog());
+    }
+
+    private void showActionsDialog() {
+        if (playbackService == null || playbackService.getCurrentVideo() == null) return;
+        String[] actions = {
+                getString(R.string.playback_queue),
+                getString(R.string.copy_video_link),
+                getString(R.string.share_video),
+                getString(R.string.video_information),
+                getString(R.string.display_mode),
+                getString(R.string.sleep_timer)
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.player_actions)
+                .setItems(actions, (dialog, which) -> {
+                    switch (which) {
+                        case 0: showQueueDialog(); break;
+                        case 1: copyCurrentLink(); break;
+                        case 2: shareCurrentLink(); break;
+                        case 3: showVideoInformationDialog(); break;
+                        case 4: showDisplayModeDialog(); break;
+                        case 5: showSleepTimerDialog(); break;
+                        default: break;
+                    }
+                })
+                .show();
+    }
+
+    private void showQueueDialog() {
+        if (playbackService == null) return;
+        List<MobilePlaybackService.QueueEntry> queue = playbackService.getQueue();
+        String[] labels = new String[queue.size()];
+        for (int i = 0; i < queue.size(); i++) {
+            MobilePlaybackService.QueueEntry item = queue.get(i);
+            String label = getString(R.string.queue_item, i + 1, item.title, item.author);
+            labels[i] = i == playbackService.getQueueIndex()
+                    ? getString(R.string.queue_current, label) : label;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.playback_queue)
+                .setSingleChoiceItems(labels, playbackService.getQueueIndex(), (dialog, which) -> {
+                    playbackService.selectQueueItem(which);
+                    dialog.dismiss();
+                })
+                .show();
+    }
+
+    private void copyCurrentLink() {
+        String videoId = currentVideoId();
+        if (TextUtils.isEmpty(videoId)) return;
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        clipboard.setPrimaryClip(ClipData.newPlainText(
+                getString(R.string.video_link), "https://youtu.be/" + videoId));
+        Toast.makeText(this, R.string.link_copied, Toast.LENGTH_SHORT).show();
+    }
+
+    private void shareCurrentLink() {
+        String videoId = currentVideoId();
+        if (TextUtils.isEmpty(videoId)) return;
+        Intent share = new Intent(Intent.ACTION_SEND)
+                .setType("text/plain")
+                .putExtra(Intent.EXTRA_TEXT, "https://youtu.be/" + videoId);
+        startActivity(Intent.createChooser(share, getString(R.string.share_video_title)));
+    }
+
+    private void showVideoInformationDialog() {
+        if (playbackService == null) return;
+        Video video = playbackService.getCurrentVideo();
+        if (video == null) return;
+        String quality = selectedTrackLabel(
+                playbackService.getVideoTrackOptions(), getString(R.string.quality_auto));
+        String captions = selectedTrackLabel(
+                playbackService.getSubtitleTrackOptions(), getString(R.string.captions_off));
+        String message = getString(R.string.video_information_value,
+                video.getTitle(), video.getAuthor(), video.videoId,
+                formatTime(playbackService.getPositionMs()), formatTime(playbackService.getDurationMs()),
+                playbackService.getQueueIndex() + 1, playbackService.getQueueSize(),
+                quality, formatSpeed(playbackService.getPlaybackSpeed()), captions);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.video_information)
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showDisplayModeDialog() {
+        PlayerData data = PlayerData.instance(this);
+        int[] modes = {
+                PlayerData.RESIZE_MODE_DEFAULT,
+                PlayerData.RESIZE_MODE_FIT_WIDTH,
+                PlayerData.RESIZE_MODE_FIT_HEIGHT,
+                PlayerData.RESIZE_MODE_FIT_BOTH,
+                PlayerData.RESIZE_MODE_STRETCH
+        };
+        String[] labels = {
+                getString(R.string.display_fit),
+                getString(R.string.display_fit_width),
+                getString(R.string.display_fit_height),
+                getString(R.string.display_zoom),
+                getString(R.string.display_stretch)
+        };
+        int selected = 0;
+        for (int i = 0; i < modes.length; i++) {
+            if (modes[i] == data.getResizeMode()) selected = i;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.display_mode)
+                .setSingleChoiceItems(labels, selected, (dialog, which) -> {
+                    data.setResizeMode(modes[which]);
+                    playerView.setResizeMode(modes[which]);
+                    dialog.dismiss();
+                })
+                .show();
+    }
+
+    private void showSleepTimerDialog() {
+        if (playbackService == null) return;
+        int[] minutes = { 0, 1, 15, 30, 60 };
+        String[] labels = {
+                getString(R.string.sleep_timer_off),
+                getResources().getQuantityString(R.plurals.sleep_timer_minutes, 1, 1),
+                getResources().getQuantityString(R.plurals.sleep_timer_minutes, 15, 15),
+                getResources().getQuantityString(R.plurals.sleep_timer_minutes, 30, 30),
+                getResources().getQuantityString(R.plurals.sleep_timer_minutes, 60, 60)
+        };
+        long remainingMinutes = (playbackService.getSleepTimerRemainingMs() + 59_999L) / 60_000L;
+        int selected = 0;
+        for (int i = 1; i < minutes.length; i++) {
+            if (remainingMinutes == minutes[i]) selected = i;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sleep_timer)
+                .setSingleChoiceItems(labels, selected, (dialog, which) -> {
+                    playbackService.setSleepTimerMinutes(minutes[which]);
+                    dialog.dismiss();
+                })
+                .show();
     }
 
     private void seekBy(long deltaMs) {
@@ -696,6 +829,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 ? getString(R.string.chapters_short_count, chapterCount) : getString(R.string.chapters));
         chaptersButton.setContentDescription(getString(R.string.chapters_count, chapterCount));
         chaptersButton.setEnabled(chapterCount > 0);
+
+        long sleepRemaining = playbackService.getSleepTimerRemainingMs();
+        actionsButton.setContentDescription(sleepRemaining > 0
+                ? getString(R.string.sleep_timer_active, formatTime(sleepRemaining))
+                : getString(R.string.player_actions));
     }
 
     private static String selectedTrackLabel(List<MobilePlaybackService.TrackOption> options, String fallback) {

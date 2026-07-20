@@ -271,14 +271,14 @@
             android:textSize="13sp" />
 
         <Button
-            android:id="@+id/copy_watch_link"
+            android:id="@+id/watch_actions"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
             android:layout_gravity="start"
             android:layout_marginStart="22dp"
             android:layout_marginTop="18dp"
             android:backgroundTint="@color/smarttube_accent"
-            android:text="@string/copy_video_link"
+            android:text="@string/player_actions"
             android:textAllCaps="false"
             android:textColor="@color/smarttube_text_primary" />
     </LinearLayout>

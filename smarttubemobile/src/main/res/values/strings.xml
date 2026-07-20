@@ -24,6 +24,26 @@
     <string name="more_actions_for">More actions for %1$s</string>
     <string name="open_watch_route">Open watch page</string>
     <string name="copy_video_link">Copy video link</string>
+    <string name="player_actions">Actions</string>
+    <string name="share_video">Share video</string>
+    <string name="share_video_title">Share SmartTube video</string>
+    <string name="video_information">Video information</string>
+    <string name="display_mode">Display mode</string>
+    <string name="display_fit">Fit</string>
+    <string name="display_fit_width">Fit width</string>
+    <string name="display_fit_height">Fit height</string>
+    <string name="display_zoom">Zoom</string>
+    <string name="display_stretch">Stretch</string>
+    <string name="sleep_timer">Sleep timer</string>
+    <string name="sleep_timer_off">Off</string>
+    <plurals name="sleep_timer_minutes">
+        <item quantity="one">%1$d minute</item>
+        <item quantity="other">%1$d minutes</item>
+    </plurals>
+    <string name="sleep_timer_active">Sleep timer: %1$s remaining</string>
+    <string name="queue_item">%1$d. %2$s — %3$s</string>
+    <string name="queue_current">▶ %1$s</string>
+    <string name="video_information_value">Title: %1$s\nAuthor: %2$s\nVideo ID: %3$s\nPosition: %4$s / %5$s\nQueue: %6$d of %7$d\nQuality: %8$s\nSpeed: %9$s\nCaptions: %10$s</string>
     <string name="video_link">Video link</string>
     <string name="link_copied">Video link copied</string>
     <string name="non_video_route_m3">Channel and playlist routes arrive in M3.</string>

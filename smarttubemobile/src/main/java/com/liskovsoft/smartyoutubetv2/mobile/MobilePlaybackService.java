@@ -12,6 +12,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.support.v4.media.MediaDescriptionCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
@@ -148,6 +149,11 @@ public final class MobilePlaybackService extends Service implements Player.Event
             handler.postDelayed(this, 1_000L);
         }
     };
+    private final Runnable sleepTimerElapsed = () -> {
+        sleepTimerEndRealtimeMs = 0;
+        PlayerData.instance(this).setSleepTimerHours(0);
+        pause();
+    };
 
     private SimpleExoPlayer player;
     private DefaultTrackSelector trackSelector;
@@ -166,6 +172,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private List<TrackOption> subtitleTrackOptions = Collections.emptyList();
     private MediaItemStoryboard storyboard;
     private List<ChapterOption> chapters = Collections.emptyList();
+    private long sleepTimerEndRealtimeMs;
 
     static void load(Context context, Video video) {
         MobileSelectionStore.put(video);
@@ -207,6 +214,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
             @Override public void onPause() { pause(); }
             @Override public void onSkipToNext() { skipNext(); }
             @Override public void onSkipToPrevious() { skipPrevious(); }
+            @Override public void onSkipToQueueItem(long id) { selectQueueItem((int) id); }
             @Override public void onSeekTo(long position) { seekTo(position); }
         });
         mediaSession.setActive(true);
@@ -398,6 +406,31 @@ public final class MobilePlaybackService extends Service implements Player.Event
         } else if (queueIndex > 0) {
             loadQueueIndex(queueIndex - 1, true);
         }
+    }
+
+    void selectQueueItem(int index) {
+        if (index >= 0 && index < queue.size() && index != queueIndex) {
+            loadQueueIndex(index, true);
+        }
+    }
+
+    void setSleepTimerMinutes(int minutes) {
+        handler.removeCallbacks(sleepTimerElapsed);
+        if (minutes <= 0) {
+            sleepTimerEndRealtimeMs = 0;
+            PlayerData.instance(this).setSleepTimerHours(0);
+        } else {
+            long durationMs = minutes * 60_000L;
+            sleepTimerEndRealtimeMs = SystemClock.elapsedRealtime() + durationMs;
+            PlayerData.instance(this).setSleepTimerHours(minutes / 60f);
+            handler.postDelayed(sleepTimerElapsed, durationMs);
+        }
+        notifyListeners();
+    }
+
+    long getSleepTimerRemainingMs() {
+        return sleepTimerEndRealtimeMs > 0
+                ? Math.max(0, sleepTimerEndRealtimeMs - SystemClock.elapsedRealtime()) : 0;
     }
 
     SimpleExoPlayer getPlayer() { return player; }
@@ -594,7 +627,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
         else state = PlaybackStateCompat.STATE_PAUSED;
 
         long actions = PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
-                | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_SEEK_TO;
+                | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_SEEK_TO
+                | PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM;
         if (hasNext()) actions |= PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
         if (currentVideo != null) actions |= PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS;
         PlaybackStateCompat.Builder builder = new PlaybackStateCompat.Builder()
@@ -707,6 +741,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
     @Override
     public void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        if (sleepTimerEndRealtimeMs > 0) PlayerData.instance(this).setSleepTimerHours(0);
+        sleepTimerEndRealtimeMs = 0;
         persistProgress(true);
         RxHelper.disposeActions(formatInfoAction);
         RxHelper.disposeActions(metadataAction);
