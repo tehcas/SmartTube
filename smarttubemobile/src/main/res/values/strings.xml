@@ -35,7 +35,17 @@
     <string name="play">Play</string>
     <string name="pause">Pause</string>
     <string name="previous">Previous</string>
+    <string name="previous_short">Prev</string>
     <string name="next">Next</string>
+    <string name="seek_back_initial">−10s</string>
+    <string name="seek_forward_initial">+10s</string>
+    <string name="seek_back_seconds">−%1$ds</string>
+    <string name="seek_forward_seconds">+%1$ds</string>
+    <plurals name="seek_seconds">
+        <item quantity="one">%1$d second</item>
+        <item quantity="other">%1$d seconds</item>
+    </plurals>
+    <string name="seek_interval">Seek interval</string>
     <string name="playback_queue">SmartTube playback queue</string>
     <string name="queue_position">Queue %1$d of %2$d</string>
     <string name="playback_progress">Playback progress</string>

@@ -2,6 +2,7 @@ package com.liskovsoft.smartyoutubetv2.mobile;
 
 import android.app.Activity;
 import android.Manifest;
+import android.app.AlertDialog;
 import android.content.pm.PackageManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -9,11 +10,16 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.text.TextUtils;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.SeekBar;
@@ -24,6 +30,7 @@ import androidx.annotation.Nullable;
 
 import com.google.android.exoplayer2.ui.PlayerView;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
+import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 
 import java.util.Locale;
 
@@ -41,12 +48,27 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private TextView positionView;
     private TextView queueView;
     private Button previousButton;
+    private Button rewindButton;
     private Button playPauseButton;
+    private Button forwardButton;
     private Button nextButton;
     private SeekBar progress;
+    private View controlsOverlay;
+    private ImageButton backButton;
     private MobilePlaybackService playbackService;
     private boolean bound;
     private boolean userSeeking;
+    private boolean isLandscape;
+    private boolean controlsHideScheduled;
+    private int seekIncrementMs;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final Runnable hideControls = () -> {
+        controlsHideScheduled = false;
+        if (isLandscape && playbackService != null && playbackService.isPlaying()) {
+            controlsOverlay.setVisibility(View.INVISIBLE);
+            backButton.setVisibility(View.INVISIBLE);
+        }
+    };
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
@@ -86,6 +108,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        isLandscape = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+        applySystemUi();
         setContentView(R.layout.activity_watch);
         bindViews();
         bindActions();
@@ -93,6 +117,29 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         requestNotificationPermissionIfNeeded();
         if (savedInstanceState == null) {
             startRequestedPlayback(getIntent());
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) applySystemUi();
+    }
+
+    private void applySystemUi() {
+        if (isLandscape) {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         }
     }
 
@@ -120,24 +167,47 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         positionView = findViewById(R.id.watch_position);
         queueView = findViewById(R.id.watch_queue);
         previousButton = findViewById(R.id.watch_previous);
+        rewindButton = findViewById(R.id.watch_rewind);
         playPauseButton = findViewById(R.id.watch_play_pause);
+        forwardButton = findViewById(R.id.watch_forward);
         nextButton = findViewById(R.id.watch_next);
         progress = findViewById(R.id.watch_progress);
+        controlsOverlay = findViewById(R.id.watch_controls_overlay);
+        backButton = findViewById(R.id.watch_back);
+        seekIncrementMs = PlayerData.instance(this).getSeekIncrementMs();
+        updateSeekLabels();
     }
 
     private void bindActions() {
-        ImageButton back = findViewById(R.id.watch_back);
         Button copyLink = findViewById(R.id.copy_watch_link);
-        back.setOnClickListener(view -> finish());
+        backButton.setOnClickListener(view -> finish());
         previousButton.setOnClickListener(view -> {
             if (playbackService != null) playbackService.skipPrevious();
+            showAndScheduleControls();
+        });
+        rewindButton.setOnClickListener(view -> {
+            seekBy(-seekIncrementMs);
+            showAndScheduleControls();
         });
         playPauseButton.setOnClickListener(view -> {
             if (playbackService == null) return;
             if (playbackService.isPlaying()) playbackService.pause(); else playbackService.play();
+            showAndScheduleControls();
+        });
+        forwardButton.setOnClickListener(view -> {
+            seekBy(seekIncrementMs);
+            showAndScheduleControls();
         });
         nextButton.setOnClickListener(view -> {
             if (playbackService != null) playbackService.skipNext();
+            showAndScheduleControls();
+        });
+        rewindButton.setOnLongClickListener(view -> showSeekIncrementDialog());
+        forwardButton.setOnLongClickListener(view -> showSeekIncrementDialog());
+        playerView.setOnClickListener(view -> toggleLandscapeControls());
+        playerView.setOnTouchListener((view, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP) view.performClick();
+            return isLandscape;
         });
         progress.setMax(1_000);
         progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -148,6 +218,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 if (playbackService != null && playbackService.getDurationMs() > 0) {
                     playbackService.seekTo(playbackService.getDurationMs() * seekBar.getProgress() / seekBar.getMax());
                 }
+                showAndScheduleControls();
             }
         });
         copyLink.setOnClickListener(view -> {
@@ -157,6 +228,68 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
             clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.video_link), "https://youtu.be/" + videoId));
             Toast.makeText(this, R.string.link_copied, Toast.LENGTH_SHORT).show();
         });
+    }
+
+    private void seekBy(long deltaMs) {
+        if (playbackService == null) return;
+        long duration = playbackService.getDurationMs();
+        long target = Math.max(0, playbackService.getPositionMs() + deltaMs);
+        if (duration > 0) target = Math.min(duration, target);
+        playbackService.seekTo(target);
+    }
+
+    private boolean showSeekIncrementDialog() {
+        int[] increments = { 5_000, 10_000, 15_000, 30_000, 60_000 };
+        String[] labels = new String[increments.length];
+        int selected = 0;
+        for (int i = 0; i < increments.length; i++) {
+            int seconds = increments[i] / 1_000;
+            labels[i] = getResources().getQuantityString(R.plurals.seek_seconds, seconds, seconds);
+            if (increments[i] == seekIncrementMs) selected = i;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.seek_interval)
+                .setSingleChoiceItems(labels, selected, (target, which) -> {
+                    seekIncrementMs = increments[which];
+                    PlayerData.instance(this).setSeekIncrementMs(seekIncrementMs);
+                    updateSeekLabels();
+                    target.dismiss();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+        return true;
+    }
+
+    private void updateSeekLabels() {
+        int seconds = Math.max(1, seekIncrementMs / 1_000);
+        rewindButton.setText(getString(R.string.seek_back_seconds, seconds));
+        forwardButton.setText(getString(R.string.seek_forward_seconds, seconds));
+    }
+
+    private void toggleLandscapeControls() {
+        if (!isLandscape) return;
+        if (controlsOverlay.getVisibility() == View.VISIBLE) {
+            uiHandler.removeCallbacks(hideControls);
+            controlsHideScheduled = false;
+            controlsOverlay.setVisibility(View.INVISIBLE);
+            backButton.setVisibility(View.INVISIBLE);
+        } else {
+            showAndScheduleControls();
+        }
+    }
+
+    private void showAndScheduleControls() {
+        controlsOverlay.setVisibility(View.VISIBLE);
+        backButton.setVisibility(View.VISIBLE);
+        if (!isLandscape || playbackService == null || !playbackService.isPlaying()) {
+            uiHandler.removeCallbacks(hideControls);
+            controlsHideScheduled = false;
+            return;
+        }
+        if (!controlsHideScheduled) {
+            controlsHideScheduled = true;
+            uiHandler.postDelayed(hideControls, 3_000L);
+        }
     }
 
     private void renderIntent(Intent intent) {
@@ -190,6 +323,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
 
     @Override
     protected void onStop() {
+        uiHandler.removeCallbacks(hideControls);
+        controlsHideScheduled = false;
         detachService();
         super.onStop();
     }
@@ -235,6 +370,10 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 formatTime(positionMs), durationMs > 0 ? formatTime(durationMs) : "--:--"));
         if (!userSeeking && durationMs > 0) {
             progress.setProgress((int) Math.min(progress.getMax(), positionMs * progress.getMax() / durationMs));
+        }
+        if (!playbackService.isPlaying()) showAndScheduleControls();
+        else if (isLandscape && controlsOverlay.getVisibility() == View.VISIBLE && !controlsHideScheduled) {
+            showAndScheduleControls();
         }
     }
 
