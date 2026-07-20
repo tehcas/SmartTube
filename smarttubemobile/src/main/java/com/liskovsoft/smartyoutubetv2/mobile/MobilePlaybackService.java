@@ -26,6 +26,7 @@ import androidx.media.app.NotificationCompat.MediaStyle;
 
 import com.google.android.exoplayer2.DefaultRenderersFactory;
 import com.google.android.exoplayer2.ExoPlaybackException;
+import com.google.android.exoplayer2.Format;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.PlaybackParameters;
 import com.google.android.exoplayer2.SimpleExoPlayer;
@@ -37,6 +38,7 @@ import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.Parameters;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.SelectionOverride;
 import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
+import com.google.android.exoplayer2.decoder.DecoderCounters;
 import com.liskovsoft.mediaserviceinterfaces.data.ChapterItem;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
@@ -154,6 +156,44 @@ public final class MobilePlaybackService extends Service implements Player.Event
         }
     }
 
+    static final class DebugSnapshot {
+        final String playerState;
+        final boolean playWhenReady;
+        final int windowIndex;
+        final long positionMs;
+        final long bufferedMs;
+        final long durationMs;
+        final int bufferedPercent;
+        final String sourceType;
+        final String videoFormat;
+        final String audioFormat;
+        final int renderedVideoBuffers;
+        final int droppedVideoBuffers;
+        final int skippedVideoBuffers;
+        final int maxConsecutiveDropped;
+
+        DebugSnapshot(String playerState, boolean playWhenReady, int windowIndex,
+                      long positionMs, long bufferedMs, long durationMs, int bufferedPercent,
+                      String sourceType, String videoFormat, String audioFormat,
+                      int renderedVideoBuffers, int droppedVideoBuffers,
+                      int skippedVideoBuffers, int maxConsecutiveDropped) {
+            this.playerState = playerState;
+            this.playWhenReady = playWhenReady;
+            this.windowIndex = windowIndex;
+            this.positionMs = positionMs;
+            this.bufferedMs = bufferedMs;
+            this.durationMs = durationMs;
+            this.bufferedPercent = bufferedPercent;
+            this.sourceType = sourceType;
+            this.videoFormat = videoFormat;
+            this.audioFormat = audioFormat;
+            this.renderedVideoBuffers = renderedVideoBuffers;
+            this.droppedVideoBuffers = droppedVideoBuffers;
+            this.skippedVideoBuffers = skippedVideoBuffers;
+            this.maxConsecutiveDropped = maxConsecutiveDropped;
+        }
+    }
+
     final class LocalBinder extends Binder {
         MobilePlaybackService getService() {
             return MobilePlaybackService.this;
@@ -198,6 +238,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private String commentsKey;
     private String liveChatKey;
     private List<SuggestionOption> suggestions = Collections.emptyList();
+    private String sourceType = "unresolved";
     private long sleepTimerEndRealtimeMs;
 
     static void load(Context context, Video video) {
@@ -341,6 +382,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         commentsKey = null;
         liveChatKey = null;
         suggestions = Collections.emptyList();
+        sourceType = "resolving";
         updateSessionMetadata();
         updateForegroundNotification();
         notifyListeners();
@@ -363,21 +405,27 @@ public final class MobilePlaybackService extends Service implements Player.Event
         trackSelectorManager.setMergedSource(info.containsDashFormats() && info.hasExtendedHlsFormats());
         MediaSource source = null;
         if (info.containsDashFormats()) {
+            sourceType = info.hasExtendedHlsFormats() ? "DASH + HLS merged" : "DASH formats";
             source = mediaSourceFactory.fromDashFormatInfo(info);
             if (info.hasExtendedHlsFormats()) {
                 source = new MergingMediaSource(source, mediaSourceFactory.fromHlsPlaylist(info.getHlsManifestUrl()));
             }
         } else if (info.containsSabrFormats()) {
+            sourceType = "SABR formats";
             source = mediaSourceFactory.fromSabrFormatInfo(info);
         } else if (info.isLive() && info.containsDashUrl()) {
+            sourceType = "Live DASH manifest";
             source = mediaSourceFactory.fromDashManifestUrl(info.getDashManifestUrl());
         } else if (info.isLive() && info.containsHlsUrl()) {
+            sourceType = "Live HLS manifest";
             source = mediaSourceFactory.fromHlsPlaylist(info.getHlsManifestUrl());
         } else if (info.containsUrlFormats()) {
+            sourceType = "Resolved URL list";
             source = mediaSourceFactory.fromUrlList(info.createUrlList());
         }
 
         if (source == null) {
+            sourceType = "unavailable";
             onFormatError(new IllegalStateException(TextUtils.isEmpty(info.getPlayabilityReason())
                     ? getString(R.string.playback_source_unavailable)
                     : info.getPlayabilityReason()));
@@ -481,6 +529,58 @@ public final class MobilePlaybackService extends Service implements Player.Event
     @Nullable String getCommentsKey() { return commentsKey; }
     @Nullable String getLiveChatKey() { return liveChatKey; }
     List<SuggestionOption> getSuggestions() { return suggestions; }
+
+    DebugSnapshot getDebugSnapshot() {
+        Format video = player.getVideoFormat();
+        Format audio = player.getAudioFormat();
+        DecoderCounters counters = player.getVideoDecoderCounters();
+        int rendered = 0;
+        int dropped = 0;
+        int skipped = 0;
+        int maxDropped = 0;
+        if (counters != null) {
+            counters.ensureUpdated();
+            rendered = counters.renderedOutputBufferCount;
+            dropped = counters.droppedBufferCount;
+            skipped = counters.skippedOutputBufferCount;
+            maxDropped = counters.maxConsecutiveDroppedBufferCount;
+        }
+        return new DebugSnapshot(playerStateLabel(player.getPlaybackState()), player.getPlayWhenReady(),
+                player.getCurrentWindowIndex(), player.getCurrentPosition(), player.getBufferedPosition(),
+                player.getDuration(), player.getBufferedPercentage(), sourceType,
+                videoFormatLabel(video), audioFormatLabel(audio), rendered, dropped, skipped, maxDropped);
+    }
+
+    private static String playerStateLabel(int state) {
+        if (state == Player.STATE_BUFFERING) return "BUFFERING";
+        if (state == Player.STATE_READY) return "READY";
+        if (state == Player.STATE_ENDED) return "ENDED";
+        return "IDLE";
+    }
+
+    private static String videoFormatLabel(@Nullable Format format) {
+        if (format == null) return "unavailable";
+        StringBuilder value = new StringBuilder();
+        value.append(format.sampleMimeType).append(" • ").append(format.width).append('×').append(format.height);
+        if (format.frameRate > 0) value.append(" • ").append(format.frameRate).append(" fps");
+        if (format.bitrate > 0) value.append(" • ").append(format.bitrate / 1_000_000f).append(" Mbps");
+        if (!TextUtils.isEmpty(format.codecs)) value.append(" • ").append(format.codecs);
+        if (format.pixelWidthHeightRatio > 0 && format.pixelWidthHeightRatio != 1f) {
+            value.append(" • PAR ").append(format.pixelWidthHeightRatio);
+        }
+        return value.toString();
+    }
+
+    private static String audioFormatLabel(@Nullable Format format) {
+        if (format == null) return "unavailable";
+        StringBuilder value = new StringBuilder();
+        value.append(format.sampleMimeType);
+        if (format.sampleRate > 0) value.append(" • ").append(format.sampleRate).append(" Hz");
+        if (format.channelCount > 0) value.append(" • ").append(format.channelCount).append(" ch");
+        if (format.bitrate > 0) value.append(" • ").append(format.bitrate / 1_000).append(" kbps");
+        if (!TextUtils.isEmpty(format.codecs)) value.append(" • ").append(format.codecs);
+        return value.toString();
+    }
 
     void selectSuggestion(int index) {
         if (index < 0 || index >= suggestions.size()) return;

@@ -13,6 +13,7 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.content.res.Configuration;
 import android.os.Bundle;
@@ -30,6 +31,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -39,6 +41,10 @@ import androidx.annotation.Nullable;
 import com.google.android.exoplayer2.ui.PlayerView;
 import com.google.android.exoplayer2.text.Cue;
 import com.google.android.exoplayer2.text.TextOutput;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.WriterException;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.transition.Transition;
@@ -55,6 +61,7 @@ import io.reactivex.disposables.Disposable;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Locale;
+import java.util.Arrays;
 
 public final class WatchActivity extends Activity implements MobilePlaybackService.Listener, TextOutput {
 
@@ -62,6 +69,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
     private static final String EXTRA_TITLE = MobilePlaybackService.EXTRA_TITLE;
     private static final String EXTRA_AUTHOR = MobilePlaybackService.EXTRA_AUTHOR;
     private static final String EXTRA_IMAGE = MobilePlaybackService.EXTRA_IMAGE;
+    private static final String CONTROL_ORDER = "control_order";
+    private static final String[] ORDERED_CONTROL_KEYS = {
+            "quality", "speed", "captions", "chapters", "pip"
+    };
+    private static final String DEFAULT_CONTROL_ORDER = "quality,speed,captions,chapters,pip";
 
     private PlayerView playerView;
     private TextView titleView;
@@ -355,7 +367,9 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 getString(R.string.sleep_timer),
                 getString(R.string.comments_and_chat),
                 getString(R.string.customize_controls),
-                getString(R.string.related_videos)
+                getString(R.string.related_videos),
+                getString(R.string.video_qr_code),
+                getString(R.string.debug_statistics)
         };
         new AlertDialog.Builder(this)
                 .setTitle(R.string.player_actions)
@@ -371,6 +385,8 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                         case 7: showCommentsCapabilityDialog(); break;
                         case 8: showCustomizeControlsDialog(); break;
                         case 9: showSuggestionsDialog(); break;
+                        case 10: showQrCodeDialog(); break;
+                        case 11: showDebugStatisticsDialog(); break;
                         default: break;
                     }
                 })
@@ -438,6 +454,56 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 .setType("text/plain")
                 .putExtra(Intent.EXTRA_TEXT, "https://youtu.be/" + videoId);
         startActivity(Intent.createChooser(share, getString(R.string.share_video_title)));
+    }
+
+    private void showQrCodeDialog() {
+        String videoId = currentVideoId();
+        if (TextUtils.isEmpty(videoId)) return;
+        String link = "https://youtu.be/" + videoId;
+        try {
+            int size = 640;
+            BitMatrix matrix = new QRCodeWriter().encode(link, BarcodeFormat.QR_CODE, size, size);
+            int[] pixels = new int[size * size];
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
+                    pixels[y * size + x] = matrix.get(x, y) ? Color.BLACK : Color.WHITE;
+                }
+            }
+            Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+            bitmap.setPixels(pixels, 0, size, 0, 0, size, size);
+            ImageView qrView = new ImageView(this);
+            int padding = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 20,
+                    getResources().getDisplayMetrics());
+            qrView.setPadding(padding, padding, padding, padding);
+            qrView.setBackgroundColor(Color.WHITE);
+            qrView.setImageBitmap(bitmap);
+            qrView.setContentDescription(link);
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.video_qr_code)
+                    .setMessage(link)
+                    .setView(qrView)
+                    .setPositiveButton(R.string.copy_video_link, (dialog, which) -> copyCurrentLink())
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        } catch (WriterException error) {
+            Toast.makeText(this, R.string.qr_generation_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showDebugStatisticsDialog() {
+        if (playbackService == null) return;
+        MobilePlaybackService.DebugSnapshot stats = playbackService.getDebugSnapshot();
+        String message = getString(R.string.debug_statistics_value,
+                stats.playerState, getString(stats.playWhenReady ? R.string.state_yes : R.string.state_no),
+                stats.windowIndex, stats.sourceType, formatTime(stats.positionMs), formatTime(stats.durationMs),
+                formatTime(stats.bufferedMs), stats.bufferedPercent, stats.videoFormat, stats.audioFormat,
+                stats.renderedVideoBuffers, stats.droppedVideoBuffers, stats.skippedVideoBuffers,
+                stats.maxConsecutiveDropped, playbackService.getQueueIndex() + 1, playbackService.getQueueSize());
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.debug_statistics)
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
     }
 
     private void showVideoInformationDialog() {
@@ -539,12 +605,98 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                     controlPreferences.edit().putBoolean(keys[which], enabled).apply();
                     applyControlVisibility();
                 })
+                .setNeutralButton(R.string.reorder_controls,
+                        (dialog, which) -> showReorderControlsDialog())
                 .setPositiveButton(android.R.string.ok, null)
                 .show();
     }
 
+    private void showReorderControlsDialog() {
+        List<String> order = getControlOrder();
+        String[] rows = new String[order.size()];
+        for (int i = 0; i < order.size(); i++) {
+            rows[i] = getString(R.string.control_order_row, i + 1, controlLabel(order.get(i)));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.reorder_controls)
+                .setItems(rows, (dialog, which) -> showMoveControlDialog(which))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showMoveControlDialog(int index) {
+        String[] moves = {
+                getString(R.string.move_earlier), getString(R.string.move_later),
+                getString(R.string.move_to_start), getString(R.string.move_to_end)
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(controlLabel(getControlOrder().get(index)))
+                .setItems(moves, (dialog, which) -> moveControl(index, which))
+                .show();
+    }
+
+    private void moveControl(int index, int action) {
+        List<String> order = getControlOrder();
+        if (index < 0 || index >= order.size()) return;
+        String key = order.remove(index);
+        int destination;
+        if (action == 0) destination = Math.max(0, index - 1);
+        else if (action == 1) destination = Math.min(order.size(), index + 1);
+        else if (action == 2) destination = 0;
+        else destination = order.size();
+        order.add(destination, key);
+        controlPreferences.edit().putString(CONTROL_ORDER, TextUtils.join(",", order)).apply();
+        applyControlOrder();
+        showReorderControlsDialog();
+    }
+
+    private List<String> getControlOrder() {
+        String saved = controlPreferences.getString(CONTROL_ORDER, DEFAULT_CONTROL_ORDER);
+        List<String> result = new ArrayList<>();
+        if (!TextUtils.isEmpty(saved)) {
+            for (String key : saved.split(",")) {
+                if (Arrays.asList(ORDERED_CONTROL_KEYS).contains(key) && !result.contains(key)) result.add(key);
+            }
+        }
+        for (String key : ORDERED_CONTROL_KEYS) if (!result.contains(key)) result.add(key);
+        return result;
+    }
+
+    private String controlLabel(String key) {
+        if ("quality".equals(key)) return getString(R.string.control_quality);
+        if ("speed".equals(key)) return getString(R.string.control_speed);
+        if ("captions".equals(key)) return getString(R.string.control_captions);
+        if ("chapters".equals(key)) return getString(R.string.control_chapters);
+        return getString(R.string.control_pip);
+    }
+
+    private View controlView(String key) {
+        if ("quality".equals(key)) return qualityButton;
+        if ("speed".equals(key)) return speedButton;
+        if ("captions".equals(key)) return captionsButton;
+        if ("chapters".equals(key)) return chaptersButton;
+        return pipButton;
+    }
+
+    private void applyControlOrder() {
+        if (qualityButton == null || controlPreferences == null) return;
+        ViewGroup parent = (ViewGroup) qualityButton.getParent();
+        if (parent == null || speedButton.getParent() != parent || captionsButton.getParent() != parent
+                || chaptersButton.getParent() != parent || pipButton.getParent() != parent) return;
+        View[] controls = { qualityButton, speedButton, captionsButton, chaptersButton, pipButton };
+        ViewGroup.LayoutParams[] params = new ViewGroup.LayoutParams[controls.length];
+        for (int i = 0; i < controls.length; i++) params[i] = controls[i].getLayoutParams();
+        for (View control : controls) parent.removeView(control);
+        for (String key : getControlOrder()) {
+            View control = controlView(key);
+            int original = Arrays.asList(controls).indexOf(control);
+            parent.addView(control, params[original]);
+        }
+    }
+
     private void applyControlVisibility() {
         if (controlPreferences == null) return;
+        applyControlOrder();
         qualityButton.setVisibility(controlPreferences.getBoolean("quality", true) ? View.VISIBLE : View.GONE);
         speedButton.setVisibility(controlPreferences.getBoolean("speed", true) ? View.VISIBLE : View.GONE);
         captionsButton.setVisibility(controlPreferences.getBoolean("captions", true) ? View.VISIBLE : View.GONE);

@@ -26,6 +26,16 @@
     <string name="copy_video_link">Copy video link</string>
     <string name="player_actions">Actions</string>
     <string name="share_video">Share video</string>
+    <string name="video_qr_code">QR video link</string>
+    <string name="qr_generation_failed">Could not generate the QR code</string>
+    <string name="debug_statistics">Playback debug statistics</string>
+    <string name="debug_statistics_value">Player: %1$s • playWhenReady %2$s • window %3$d\nSource: %4$s\nPosition: %5$s / %6$s\nBuffered: %7$s (%8$d%%)\nVideo: %9$s\nAudio: %10$s\nVideo buffers: rendered %11$d • dropped %12$d • skipped %13$d • max consecutive dropped %14$d\nQueue: %15$d of %16$d\nService PID continuity is verified externally through ADB.</string>
+    <string name="reorder_controls">Reorder player controls</string>
+    <string name="control_order_row">%1$d. %2$s</string>
+    <string name="move_earlier">Move earlier</string>
+    <string name="move_later">Move later</string>
+    <string name="move_to_start">Move to start</string>
+    <string name="move_to_end">Move to end</string>
     <string name="share_video_title">Share SmartTube video</string>
     <string name="video_information">Video information</string>
     <string name="display_mode">Display mode</string>
