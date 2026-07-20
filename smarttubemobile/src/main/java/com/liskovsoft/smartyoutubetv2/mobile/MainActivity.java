@@ -491,7 +491,15 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         pendingPreviousAccount = previous;
         pendingTargetAccount = target;
         pendingAccountSelectionChanged = changed;
-        if (changed) writeAccountSelectionTransaction(previous, target);
+        if (changed && !writeAccountSelectionTransaction(previous, target)) {
+            clearAccountSelectionTransaction();
+            clearPendingAccountSelection();
+            accountSelectionReadback = "failed_preserved";
+            Toast.makeText(this, R.string.account_selection_failed_preserved, Toast.LENGTH_LONG).show();
+            updateBadge();
+            presenter.refresh();
+            return;
+        }
         accountSelectionReadback = "verifying";
         showAccountSelectionProgress();
         if (changed) {
@@ -533,7 +541,18 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         accountSelectionProgress = null;
         accountSelectionAction = null;
         if (verified) {
-            clearAccountSelectionTransaction();
+            if (pendingAccountSelectionChanged && !clearAccountSelectionTransaction()) {
+                boolean restored = sameAccount(target, signInService.getSelectedAccount());
+                if (restored) applySharedAccountSelection(pendingPreviousAccount);
+                clearAccountSelectionTransaction();
+                clearPendingAccountSelection();
+                accountSelectionReadback = restored ? "failed_restored" : "failed_preserved";
+                Toast.makeText(this, restored ? R.string.account_selection_failed_restored
+                        : R.string.account_selection_failed_preserved, Toast.LENGTH_LONG).show();
+                updateBadge();
+                presenter.refresh();
+                return;
+            }
             clearPendingAccountSelection();
             accountSelectionReadback = "verified";
             Toast.makeText(this, R.string.account_selection_verified, Toast.LENGTH_LONG).show();
@@ -579,18 +598,22 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         pendingAccountSelectionChanged = false;
     }
 
-    private void writeAccountSelectionTransaction(@Nullable Account previous, @Nullable Account target) {
+    private boolean writeAccountSelectionTransaction(@Nullable Account previous, @Nullable Account target) {
+        String previousFingerprint = previous != null ? accountFingerprint(previous) : null;
+        String targetFingerprint = target != null ? accountFingerprint(target) : null;
+        if ((previous != null && previousFingerprint == null)
+                || (target != null && targetFingerprint == null)) return false;
         SharedPreferences.Editor editor = accountTransactionPreferences().edit()
                 .putBoolean(ACCOUNT_TRANSACTION_PENDING, true)
                 .putBoolean(ACCOUNT_TRANSACTION_PREVIOUS_NULL, previous == null)
                 .putBoolean(ACCOUNT_TRANSACTION_TARGET_NULL, target == null);
         if (previous != null) editor.putString(ACCOUNT_TRANSACTION_PREVIOUS_FINGERPRINT,
-                accountFingerprint(previous));
+                previousFingerprint);
         else editor.remove(ACCOUNT_TRANSACTION_PREVIOUS_FINGERPRINT);
         if (target != null) editor.putString(ACCOUNT_TRANSACTION_TARGET_FINGERPRINT,
-                accountFingerprint(target));
+                targetFingerprint);
         else editor.remove(ACCOUNT_TRANSACTION_TARGET_FINGERPRINT);
-        editor.commit();
+        return editor.commit();
     }
 
     private void recoverInterruptedAccountSelection() {
@@ -641,9 +664,11 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     private boolean matchesStoredAccount(@Nullable Account account, boolean storedNull,
                                                 @Nullable String storedFingerprint) {
         return storedNull ? account == null
-                : account != null && TextUtils.equals(storedFingerprint, accountFingerprint(account));
+                : account != null && storedFingerprint != null
+                        && TextUtils.equals(storedFingerprint, accountFingerprint(account));
     }
 
+    @Nullable
     private String accountFingerprint(Account account) {
         String value = account.getId() + "\u001f" + fingerprintPart(account.getName()) + "\u001f"
                 + fingerprintPart(account.getEmail()) + "\u001f"
@@ -655,7 +680,9 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         }
         try {
             MessageDigest messageDigest = MessageDigest.getInstance("SHA-256");
-            messageDigest.update(accountFingerprintSalt());
+            byte[] salt = accountFingerprintSalt();
+            if (salt == null) return null;
+            messageDigest.update(salt);
             byte[] digest = messageDigest.digest(value.getBytes(StandardCharsets.UTF_8));
             StringBuilder result = new StringBuilder(digest.length * 2);
             for (byte item : digest) result.append(String.format("%02x", item & 0xff));
@@ -665,6 +692,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         }
     }
 
+    @Nullable
     private byte[] accountFingerprintSalt() {
         synchronized (ACCOUNT_FINGERPRINT_LOCK) {
             SharedPreferences preferences = getSharedPreferences(ACCOUNT_FINGERPRINT_PREFS, MODE_PRIVATE);
@@ -673,7 +701,10 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
                 byte[] generated = new byte[32];
                 new SecureRandom().nextBytes(generated);
                 encoded = Base64.encodeToString(generated, Base64.NO_WRAP);
-                preferences.edit().putString(ACCOUNT_FINGERPRINT_SALT, encoded).commit();
+                if (!preferences.edit().putString(ACCOUNT_FINGERPRINT_SALT, encoded).commit()) {
+                    preferences.edit().remove(ACCOUNT_FINGERPRINT_SALT).apply();
+                    return null;
+                }
             }
             return Base64.decode(encoded, Base64.NO_WRAP);
         }
@@ -687,8 +718,8 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         return getSharedPreferences(ACCOUNT_TRANSACTION_PREFS, MODE_PRIVATE);
     }
 
-    private void clearAccountSelectionTransaction() {
-        accountTransactionPreferences().edit().clear().commit();
+    private boolean clearAccountSelectionTransaction() {
+        return accountTransactionPreferences().edit().clear().commit();
     }
 
     private void showAccountSelectionProgress() {
@@ -733,7 +764,9 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         if (first == second) return true;
         if (first == null || second == null) return false;
         String fingerprint = accountFingerprint(first);
-        return TextUtils.equals(fingerprint, accountFingerprint(second))
+        String secondFingerprint = accountFingerprint(second);
+        return fingerprint != null && secondFingerprint != null
+                && TextUtils.equals(fingerprint, secondFingerprint)
                 && isUniqueAccountFingerprint(fingerprint);
     }
 
