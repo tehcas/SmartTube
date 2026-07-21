@@ -3,13 +3,19 @@ package com.liskovsoft.smartyoutubetv2.common.prefs;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.text.TextUtils;
+import android.util.AtomicFile;
 
 import com.liskovsoft.mediaserviceinterfaces.oauth.Account;
 import com.liskovsoft.sharedutils.misc.WeakHashSet;
+import com.liskovsoft.sharedutils.helpers.FileHelpers;
 import com.liskovsoft.sharedutils.prefs.SharedPreferencesBase;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.service.SidebarService;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager.AccountChangeListener;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 
 public class AppPrefs extends SharedPreferencesBase implements AccountChangeListener {
     private static final String TAG = AppPrefs.class.getSimpleName();
@@ -118,8 +124,67 @@ public class AppPrefs extends SharedPreferencesBase implements AccountChangeList
         return getData(getProfileKey(key, isMultiProfilesEnabled()));
     }
 
+    public String getCurrentProfileScope() {
+        return getProfileKey("", isMultiProfilesEnabled());
+    }
+
+    public String getProfileDataForScope(String profileScope, String key) {
+        return profileScope == null ? null : getData(profileScope + key);
+    }
+
     public void setProfileData(String key, String data) {
         setData(getProfileKey(key, isMultiProfilesEnabled()), data);
+    }
+
+    public boolean writeProfileDataChecked(String key, String data) {
+        return writeDataChecked(getProfileKey(key, isMultiProfilesEnabled()), data);
+    }
+
+    public boolean writeProfileDataCheckedForScope(String profileScope, String key, String data) {
+        return profileScope != null && writeDataChecked(profileScope + key, data);
+    }
+
+    public boolean deleteProfileDataCheckedForScope(String profileScope, String key) {
+        return profileScope != null && deleteDataChecked(profileScope + key);
+    }
+
+    public boolean deleteDataChecked(String key) {
+        if (key == null) {
+            return false;
+        }
+
+        File destination = new File(FileHelpers.getFilesDir(getContext()), PREFS_DIR + "/" + key);
+        AtomicFile atomicFile = new AtomicFile(destination);
+        atomicFile.delete();
+        return !destination.exists()
+                && !new File(destination.getPath() + ".bak").exists()
+                && !new File(destination.getPath() + ".new").exists();
+    }
+
+    public boolean writeDataChecked(String key, String data) {
+        if (key == null || data == null) {
+            return false;
+        }
+
+        File destination = new File(FileHelpers.getFilesDir(getContext()), PREFS_DIR + "/" + key);
+        File parent = destination.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            return false;
+        }
+
+        AtomicFile atomicFile = new AtomicFile(destination);
+        FileOutputStream output = null;
+        try {
+            output = atomicFile.startWrite();
+            output.write(data.getBytes(StandardCharsets.UTF_8));
+            atomicFile.finishWrite(output);
+            return data.equals(FileHelpers.getFileContents(destination));
+        } catch (Exception error) {
+            if (output != null) {
+                atomicFile.failWrite(output);
+            }
+            return false;
+        }
     }
 
     //public String getData(String key) {

@@ -145,6 +145,29 @@
     <string name="control_chapters">Chapters</string>
     <string name="control_pip">Picture-in-picture</string>
     <string name="control_queue">Queue position</string>
+    <string name="mobile_backup_title">Portable settings backup</string>
+    <string name="mobile_backup_privacy">Portable settings only. Accounts, credentials, identity, History, passwords, linked devices, and private identifiers stay on this device.</string>
+    <string name="mobile_backup_export">Export portable settings</string>
+    <string name="mobile_backup_restore">Restore portable settings</string>
+    <string name="mobile_backup_exporting">Creating privacy-safe backup…</string>
+    <string name="mobile_backup_validating">Validating backup before restore…</string>
+    <string name="mobile_backup_restoring">Restoring portable settings…</string>
+    <plurals name="mobile_backup_exported">
+        <item quantity="one">Exported %1$d portable setting group.</item>
+        <item quantity="other">Exported %1$d portable setting groups.</item>
+    </plurals>
+    <string name="mobile_backup_restore_confirm_title">Restore portable settings?</string>
+    <plurals name="mobile_backup_restore_confirm">
+        <item quantity="one">This validated backup contains %1$d portable setting group. It will update the current profile only. Accounts, credentials, History, passwords, linked devices, and private identifiers remain untouched. SmartTube Mobile will close after verification so the restored settings load cleanly.</item>
+        <item quantity="other">This validated backup contains %1$d portable setting groups. It will update the current profile only. Accounts, credentials, History, passwords, linked devices, and private identifiers remain untouched. SmartTube Mobile will close after verification so the restored settings load cleanly.</item>
+    </plurals>
+    <string name="mobile_backup_restore_complete_title">Restore verified</string>
+    <plurals name="mobile_backup_restored">
+        <item quantity="one">Restored and verified %1$d portable setting group. SmartTube Mobile will now close; reopen it to load the restored settings.</item>
+        <item quantity="other">Restored and verified %1$d portable setting groups. SmartTube Mobile will now close; reopen it to load the restored settings.</item>
+    </plurals>
+    <string name="mobile_backup_failed_title">Backup operation failed</string>
+    <string name="mobile_backup_failed">The operation did not complete. %1$s</string>
     <string name="comments_unavailable_provider">Comments and live chat are unavailable because the active SmartTube provider supplied no comments or live-chat key for this video.</string>
 
     <string name="open_comments">Open comments</string>

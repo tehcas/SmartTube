@@ -122,7 +122,9 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     private AlertDialog signInDialog;
     private AlertDialog accountSelectionProgress;
     private AlertDialog historyReadbackProgress;
+    private AlertDialog backupProgress;
     private SignInService signInService;
+    private MobileBackupManager backupManager;
     private BrowseProcessorManager fallbackBrowseProcessor;
     private boolean lastDeArrowTitles;
     private boolean lastDeArrowThumbnails;
@@ -158,6 +160,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         }
 
         signInService = YouTubeServiceManager.instance().getSignInService();
+        backupManager = new MobileBackupManager(this);
         presenter = BrowsePresenter.instance(this);
         presenter.setView(this);
         recoverInterruptedAccountSelection();
@@ -173,6 +176,17 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         super.onNewIntent(intent);
         setIntent(intent);
         handleDeepLink(intent);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (requestCode == MobileBackupManager.REQUEST_EXPORT) {
+            exportPortableSettings(data.getData());
+        } else if (requestCode == MobileBackupManager.REQUEST_IMPORT) {
+            inspectPortableBackup(data.getData());
+        }
     }
 
     @Override
@@ -208,6 +222,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         }
         if (signInDialog != null) signInDialog.dismiss();
         if (accountSelectionProgress != null) accountSelectionProgress.dismiss();
+        if (backupProgress != null) backupProgress.dismiss();
         MediaServiceManager.instance().removeAccountListener(this);
         presenter.onViewDestroyed();
         super.onDestroy();
@@ -1398,6 +1413,9 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
                 if (TextUtils.equals(item.title,
                         getString(com.liskovsoft.smartyoutubetv2.common.R.string.dearrow_provider))) {
                     showMobileDeArrowSettings();
+                } else if (TextUtils.equals(item.title,
+                        getString(com.liskovsoft.smartyoutubetv2.common.R.string.app_backup_restore))) {
+                    showMobileBackupSettings();
                 } else if (item.onClick != null) {
                     item.onClick.run();
                 }
@@ -1429,6 +1447,122 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
+    }
+
+    private void showMobileBackupSettings() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.mobile_backup_title)
+                .setMessage(R.string.mobile_backup_privacy)
+                .setPositiveButton(R.string.mobile_backup_export, (dialog, which) ->
+                        startActivityForResult(backupManager.createExportIntent(),
+                                MobileBackupManager.REQUEST_EXPORT))
+                .setNeutralButton(R.string.mobile_backup_restore, (dialog, which) ->
+                        startActivityForResult(backupManager.createImportIntent(),
+                                MobileBackupManager.REQUEST_IMPORT))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void exportPortableSettings(Uri uri) {
+        showBackupProgress(R.string.mobile_backup_exporting);
+        new Thread(() -> {
+            try {
+                int count = backupManager.exportTo(uri);
+                runOnUiThread(() -> finishBackupProgress(
+                        getResources().getQuantityString(R.plurals.mobile_backup_exported, count, count)));
+            } catch (Exception error) {
+                runOnUiThread(() -> failBackupProgress(error));
+            }
+        }, "mobile-settings-export").start();
+    }
+
+    private void inspectPortableBackup(Uri uri) {
+        showBackupProgress(R.string.mobile_backup_validating);
+        new Thread(() -> {
+            try {
+                MobileBackupManager.Archive archive = backupManager.inspect(uri);
+                runOnUiThread(() -> {
+                    dismissBackupProgress();
+                    if (isFinishing() || isDestroyed()) return;
+                    new AlertDialog.Builder(this)
+                            .setTitle(R.string.mobile_backup_restore_confirm_title)
+                            .setMessage(getResources().getQuantityString(
+                                    R.plurals.mobile_backup_restore_confirm,
+                                    archive.itemCount(), archive.itemCount()))
+                            .setPositiveButton(R.string.mobile_backup_restore, (dialog, which) ->
+                                    restorePortableBackup(archive))
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> failBackupProgress(error));
+            }
+        }, "mobile-settings-validate").start();
+    }
+
+    private void restorePortableBackup(MobileBackupManager.Archive archive) {
+        showBackupProgress(R.string.mobile_backup_restoring);
+        new Thread(() -> {
+            try {
+                int count = backupManager.restore(archive);
+                runOnUiThread(() -> {
+                    dismissBackupProgress();
+                    if (isFinishing() || isDestroyed()) {
+                        Runtime.getRuntime().exit(0);
+                        return;
+                    }
+                    new AlertDialog.Builder(this)
+                            .setTitle(R.string.mobile_backup_restore_complete_title)
+                            .setMessage(getResources().getQuantityString(
+                                    R.plurals.mobile_backup_restored, count, count))
+                            .setCancelable(false)
+                            .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                                finishAffinity();
+                                Runtime.getRuntime().exit(0);
+                            })
+                            .show();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> failBackupProgress(error));
+            }
+        }, "mobile-settings-restore").start();
+    }
+
+    private void showBackupProgress(int messageResId) {
+        dismissBackupProgress();
+        backupProgress = new AlertDialog.Builder(this)
+                .setTitle(R.string.mobile_backup_title)
+                .setMessage(messageResId)
+                .setView(new ProgressBar(this))
+                .setCancelable(false)
+                .create();
+        backupProgress.show();
+    }
+
+    private void finishBackupProgress(String message) {
+        dismissBackupProgress();
+        if (!isFinishing() && !isDestroyed()) {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void failBackupProgress(Exception error) {
+        dismissBackupProgress();
+        if (!isFinishing() && !isDestroyed()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.mobile_backup_failed_title)
+                    .setMessage(getString(R.string.mobile_backup_failed,
+                            error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()))
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+        }
+    }
+
+    private void dismissBackupProgress() {
+        if (backupProgress != null) {
+            backupProgress.dismiss();
+            backupProgress = null;
+        }
     }
 
     private void refreshVisibleDeArrowCards() {
