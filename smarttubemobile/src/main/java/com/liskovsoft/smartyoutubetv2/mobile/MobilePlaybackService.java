@@ -49,10 +49,12 @@ import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItem;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemStoryboard;
 import com.liskovsoft.mediaserviceinterfaces.data.SponsorSegment;
+import com.liskovsoft.mediaserviceinterfaces.oauth.Account;
 import com.liskovsoft.sharedutils.rx.RxHelper;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.VideoGroup;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.service.VideoStateService;
+import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.ExoMediaSourceFactory;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.ExoPlayerInitializer;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.ExoFormatItem;
@@ -61,6 +63,7 @@ import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.TrackSelectorMan
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.TrackSelectorUtil;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.track.MediaTrack;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
@@ -77,7 +80,8 @@ import java.util.regex.Pattern;
 import io.reactivex.disposables.Disposable;
 
 /** Owns the mobile ExoPlayer, queue, MediaSession and foreground notification. */
-public final class MobilePlaybackService extends Service implements Player.EventListener {
+public final class MobilePlaybackService extends Service implements Player.EventListener,
+        MediaServiceManager.AccountChangeListener {
     static final String ACTION_LOAD = "org.smarttube.mobile.action.LOAD";
     static final String ACTION_PLAY = "org.smarttube.mobile.action.PLAY";
     static final String ACTION_PAUSE = "org.smarttube.mobile.action.PAUSE";
@@ -276,6 +280,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private Video currentVideo;
     private String playbackError;
     private long lastSavedPosition = -STATE_SAVE_INTERVAL_MS;
+    private volatile String historySyncState = "not_started";
+    private volatile int historySyncRequests;
+    private volatile long lastHistorySyncPositionMs;
+    private volatile long historySyncSequence;
     private boolean restoredTrackPreferences;
     private List<TrackOption> videoTrackOptions = Collections.emptyList();
     private List<TrackOption> subtitleTrackOptions = Collections.emptyList();
@@ -322,6 +330,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         createNotificationChannel();
         initializePlayer();
         initializeMediaSession();
+        MediaServiceManager.instance().addAccountListener(this);
         startForeground(NOTIFICATION_ID, buildNotification());
         handler.post(progressTick);
     }
@@ -463,6 +472,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         likeStatus = MediaItemMetadata.LIKE_STATUS_INDIFFERENT;
         subscribed = false;
         channelId = null;
+        resetHistorySyncDiagnostics();
         updateSessionMetadata();
         updateForegroundNotification();
         notifyListeners();
@@ -628,6 +638,21 @@ public final class MobilePlaybackService extends Service implements Player.Event
     @Nullable String getPublicDislikeCount() { return publicDislikeCount; }
     long getPublicViewCount() { return publicViewCount; }
     String getPublicRatingState() { return publicRatingState; }
+    String getHistorySyncState() { return historySyncState; }
+    int getHistorySyncRequests() { return historySyncRequests; }
+    long getLastHistorySyncPositionMs() { return lastHistorySyncPositionMs; }
+
+    @Override
+    public void onAccountChanged(Account account) {
+        resetHistorySyncDiagnostics();
+    }
+
+    private void resetHistorySyncDiagnostics() {
+        historySyncSequence++;
+        historySyncState = "not_started";
+        historySyncRequests = 0;
+        lastHistorySyncPositionMs = 0;
+    }
 
     void acknowledgeSponsorEvent(long sequence) {
         if (sponsorEvent != null && sponsorEvent.sequence == sequence && !sponsorEvent.confirmationRequired) {
@@ -1116,6 +1141,28 @@ public final class MobilePlaybackService extends Service implements Player.Event
         long duration = player.getDuration();
         VideoStateService stateService = VideoStateService.instance(this);
         stateService.save(new VideoStateService.State(currentVideo, position, duration));
+        if (GeneralData.instance(this).getHistoryState() == GeneralData.HISTORY_DISABLED) {
+            historySyncState = "paused_on_mobile";
+        } else if (!YouTubeServiceManager.instance().getSignInService().isSigned()) {
+            historySyncState = "signed_out";
+        } else {
+            long syncPosition = Math.max(position, 3_000L);
+            long requestSequence = ++historySyncSequence;
+            boolean started = MediaServiceManager.instance().updateHistory(currentVideo, syncPosition,
+                    () -> {
+                        if (requestSequence == historySyncSequence) historySyncState = "verified";
+                    },
+                    () -> {
+                        if (requestSequence == historySyncSequence) historySyncState = "failed";
+                    });
+            if (started) {
+                historySyncState = "pending";
+                historySyncRequests++;
+                lastHistorySyncPositionMs = syncPosition;
+            } else {
+                historySyncState = "busy";
+            }
+        }
         if (force) stateService.persistNow();
         lastSavedPosition = position;
     }
@@ -1272,6 +1319,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
 
     @Override
     public void onDestroy() {
+        MediaServiceManager.instance().removeAccountListener(this);
         handler.removeCallbacksAndMessages(null);
         if (sleepTimerEndRealtimeMs > 0) PlayerData.instance(this).setSleepTimerHours(0);
         sleepTimerEndRealtimeMs = 0;

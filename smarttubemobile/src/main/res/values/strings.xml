@@ -36,6 +36,20 @@
     <string name="sign_in_error">Sign-in failed: %1$s</string>
     <string name="sign_in_complete">YouTube account connected</string>
 
+    <string name="history_synchronization">History synchronization</string>
+    <string name="history_account_required">Select an authenticated account before configuring synchronized History.</string>
+    <string name="history_mode_automatic">Follow account default</string>
+    <string name="history_mode_enabled">Sync from this mobile</string>
+    <string name="history_mode_paused">Pause on this mobile</string>
+    <string name="history_status_value">Mobile mode: %1$s\nProvider history access: %2$s\nProvider items visible: %3$s</string>
+    <string name="history_items_unavailable">Not read</string>
+    <string name="verify_provider_history">Verify provider</string>
+    <string name="history_provider_verifying">Reading authenticated History from the selected account…</string>
+    <string name="history_provider_verified">Authenticated History readback verified.</string>
+    <string name="history_provider_failed">Authenticated History readback failed.</string>
+    <string name="history_provider_failed_short">Failed</string>
+    <string name="history_setting_not_saved">History mode was not changed because its account-specific setting could not be saved.</string>
+
     <string name="signed_out_explore_feed">Signed-out discovery • real SmartTube results</string>
     <string name="loading_signed_out_feed">Loading signed-out discovery feed…</string>
     <string name="signed_out_discovery_query" translatable="false">technology</string>

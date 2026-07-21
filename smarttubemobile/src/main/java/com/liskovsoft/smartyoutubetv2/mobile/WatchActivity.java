@@ -536,7 +536,11 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
                 + "\nRYD public likes: " + fallback(playbackService.getPublicLikeCount())
                 + "\nRYD public dislikes: " + fallback(playbackService.getPublicDislikeCount())
                 + "\nRYD provider views: " + playbackService.getPublicViewCount()
-                + "\nAuthenticated Like status: " + playbackService.getLikeStatus();
+                + "\nAuthenticated Like status: " + playbackService.getLikeStatus()
+                + "\n\nHistory sync state: " + playbackService.getHistorySyncState()
+                + "\nHistory sync requests: " + playbackService.getHistorySyncRequests()
+                + "\nLast History sync position: "
+                + formatTime(playbackService.getLastHistorySyncPositionMs());
         new AlertDialog.Builder(this)
                 .setTitle(R.string.debug_statistics)
                 .setMessage(message)

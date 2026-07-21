@@ -376,8 +376,12 @@ public class MediaServiceManager implements OnAccountChange {
     }
 
     public void updateHistory(Video video, long positionMs) {
+        updateHistory(video, positionMs, null, null);
+    }
+
+    public boolean updateHistory(Video video, long positionMs, Runnable onSuccess, Runnable onFailure) {
         if (video == null || RxHelper.isAnyActionRunning(mHistoryAction)) {
-            return;
+            return false;
         }
 
         RxHelper.disposeActions(mHistoryAction);
@@ -390,7 +394,14 @@ public class MediaServiceManager implements OnAccountChange {
             historyObservable = mItemService.updateHistoryPositionObserve(video.videoId, positionMs / 1_000f);
         }
 
-        mHistoryAction = RxHelper.execute(historyObservable, error -> setHistoryBroken(true), () -> setHistoryBroken(false));
+        mHistoryAction = RxHelper.execute(historyObservable, error -> {
+            setHistoryBroken(true);
+            if (onFailure != null) onFailure.run();
+        }, () -> {
+            setHistoryBroken(false);
+            if (onSuccess != null) onSuccess.run();
+        });
+        return true;
     }
 
     public void hideNotification(Video item) {

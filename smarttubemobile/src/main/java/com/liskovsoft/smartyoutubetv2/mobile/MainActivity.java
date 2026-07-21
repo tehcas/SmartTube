@@ -27,6 +27,8 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -82,6 +84,9 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     private static final String ACCOUNT_TRANSACTION_PREVIOUS_FINGERPRINT = "previous_fingerprint";
     private static final String ACCOUNT_TRANSACTION_TARGET_NULL = "target_null";
     private static final String ACCOUNT_TRANSACTION_TARGET_FINGERPRINT = "target_fingerprint";
+    private static final String ACCOUNT_HISTORY_PREFS = "mobile_account_history";
+    private static final String ACCOUNT_HISTORY_KEY_PREFIX = "history_";
+    private static final String ACCOUNT_HISTORY_MIGRATION_COMPLETE = "migration_complete";
     private static final String STATE_SECTION_ID = "mobile_section_id";
     private static final String STATE_SCROLL_Y = "mobile_scroll_y";
     private static final int MAX_CARDS_PER_SHELF = 12;
@@ -113,8 +118,10 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     private Disposable homeFallbackAction;
     private Disposable signInAction;
     private Disposable accountSelectionAction;
+    private Disposable historyReadbackAction;
     private AlertDialog signInDialog;
     private AlertDialog accountSelectionProgress;
+    private AlertDialog historyReadbackProgress;
     private SignInService signInService;
     private BrowseProcessorManager fallbackBrowseProcessor;
     private boolean lastDeArrowTitles;
@@ -125,6 +132,10 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     private Account pendingPreviousAccount;
     private Account pendingTargetAccount;
     private boolean pendingAccountSelectionChanged;
+    private long historyReadbackSequence;
+    private long historyReadbackProgressSequence;
+    private String historyReadback = "not_verified";
+    private int historyItemCount = -1;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -150,6 +161,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         presenter = BrowsePresenter.instance(this);
         presenter.setView(this);
         recoverInterruptedAccountSelection();
+        applyAccountHistoryPreference(signInService.getSelectedAccount());
         presenter.onViewInitialized();
         MediaServiceManager.instance().addAccountListener(this);
         updateBadge();
@@ -186,6 +198,9 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         disposeHomeFallback();
         fallbackBrowseProcessor.dispose();
         if (signInAction != null) signInAction.dispose();
+        ++historyReadbackSequence;
+        if (historyReadbackAction != null) historyReadbackAction.dispose();
+        if (historyReadbackProgress != null) historyReadbackProgress.dismiss();
         if (isChangingConfigurations() && pendingAccountSelectionChanged) {
             suspendAccountSelectionForConfigurationChange();
         } else {
@@ -444,6 +459,13 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
     @Override
     public void onAccountChanged(Account account) {
         runUi(() -> {
+            ++historyReadbackSequence;
+            if (historyReadbackAction != null) historyReadbackAction.dispose();
+            historyReadbackAction = null;
+            dismissHistoryReadbackProgress();
+            historyReadback = "not_verified";
+            historyItemCount = -1;
+            applyAccountHistoryPreference(account);
             updateBadge();
             if (presenter != null) presenter.refresh();
         });
@@ -457,7 +479,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
             return;
         }
         accountCount = accounts.size();
-        String[] labels = new String[accounts.size() + 2];
+        String[] labels = new String[accounts.size() + 3];
         int checked = accounts.size() + 1;
         for (int i = 0; i < accounts.size(); i++) {
             Account account = accounts.get(i);
@@ -467,6 +489,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         }
         labels[accounts.size()] = getString(R.string.add_account);
         labels[accounts.size() + 1] = getString(R.string.use_without_account);
+        labels[accounts.size() + 2] = getString(R.string.history_synchronization);
         final AlertDialog[] holder = new AlertDialog[1];
         holder[0] = new AlertDialog.Builder(this)
                 .setTitle(R.string.account)
@@ -474,7 +497,8 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
                     dialog.dismiss();
                     if (which < accounts.size()) selectAccountWithReadback(accounts.get(which));
                     else if (which == accounts.size()) startDeviceSignIn();
-                    else selectAccountWithReadback(null);
+                    else if (which == accounts.size() + 1) selectAccountWithReadback(null);
+                    else showHistorySyncDialog();
                 })
                 .setNeutralButton(R.string.account_status, (dialog, which) -> showAccountStatusDialog())
                 .setNegativeButton(android.R.string.cancel, null)
@@ -529,10 +553,7 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
         signInService.selectAccount(account);
         YouTubeSignInService.instance().invalidateCache();
         Utils.updateChannels(this);
-        GeneralData generalData = GeneralData.instance(this);
-        if (generalData.getHistoryState() != GeneralData.HISTORY_AUTO) {
-            MediaServiceManager.instance().enableHistory(generalData.isHistoryEnabled());
-        }
+        applyAccountHistoryPreference(account);
     }
 
     private void finishAccountSelection(long sequence, @Nullable Account target, boolean verified) {
@@ -720,6 +741,177 @@ public final class MainActivity extends Activity implements BrowseView, MediaSer
 
     private boolean clearAccountSelectionTransaction() {
         return accountTransactionPreferences().edit().clear().commit();
+    }
+
+    private void applyAccountHistoryPreference(@Nullable Account account) {
+        if (account == null) return;
+        String fingerprint = accountFingerprint(account);
+        GeneralData generalData = GeneralData.instance(this);
+        if (fingerprint == null) {
+            generalData.setHistoryState(GeneralData.HISTORY_AUTO);
+            return;
+        }
+        SharedPreferences preferences = getSharedPreferences(ACCOUNT_HISTORY_PREFS, MODE_PRIVATE);
+        String key = ACCOUNT_HISTORY_KEY_PREFIX + fingerprint;
+        int state;
+        if (preferences.contains(key)) {
+            state = preferences.getInt(key, GeneralData.HISTORY_AUTO);
+            if (!preferences.getBoolean(ACCOUNT_HISTORY_MIGRATION_COMPLETE, false)
+                    && !preferences.edit().putBoolean(ACCOUNT_HISTORY_MIGRATION_COMPLETE, true).commit()) {
+                generalData.setHistoryState(GeneralData.HISTORY_AUTO);
+                Toast.makeText(this, R.string.history_setting_not_saved, Toast.LENGTH_LONG).show();
+                return;
+            }
+        } else {
+            boolean migrateExistingState = !preferences.getBoolean(
+                    ACCOUNT_HISTORY_MIGRATION_COMPLETE, false);
+            state = migrateExistingState ? generalData.getHistoryState() : GeneralData.HISTORY_AUTO;
+            SharedPreferences.Editor editor = preferences.edit().putInt(key, state);
+            if (migrateExistingState) editor.putBoolean(ACCOUNT_HISTORY_MIGRATION_COMPLETE, true);
+            if (!editor.commit()) {
+                generalData.setHistoryState(GeneralData.HISTORY_AUTO);
+                Toast.makeText(this, R.string.history_setting_not_saved, Toast.LENGTH_LONG).show();
+                return;
+            }
+        }
+        generalData.setHistoryState(state);
+        if (state == GeneralData.HISTORY_ENABLED) {
+            MediaServiceManager.instance().enableHistory(true);
+        }
+    }
+
+    private void showHistorySyncDialog() {
+        Account selected = signInService != null ? signInService.getSelectedAccount() : null;
+        if (selected == null) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.history_synchronization)
+                    .setMessage(R.string.history_account_required)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        int state = GeneralData.instance(this).getHistoryState();
+        String itemCount = historyItemCount >= 0 ? String.valueOf(historyItemCount)
+                : getString(R.string.history_items_unavailable);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(24), dp(4), dp(24), dp(8));
+        TextView status = new TextView(this);
+        status.setText(getString(R.string.history_status_value,
+                historyModeLabel(state), historyReadbackLabel(), itemCount));
+        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        status.setTextColor(color(R.color.smarttube_text_primary));
+        status.setPadding(0, 0, 0, dp(8));
+        content.addView(status, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        RadioGroup modes = new RadioGroup(this);
+        int[] states = {GeneralData.HISTORY_AUTO, GeneralData.HISTORY_ENABLED, GeneralData.HISTORY_DISABLED};
+        int[] labels = {R.string.history_mode_automatic, R.string.history_mode_enabled,
+                R.string.history_mode_paused};
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int i = 0; i < states.length; i++) {
+            RadioButton option = new RadioButton(this);
+            option.setId(View.generateViewId());
+            option.setText(labels[i]);
+            option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+            option.setTextColor(color(R.color.smarttube_text_primary));
+            option.setPadding(0, dp(8), 0, dp(8));
+            option.setChecked(state == states[i]);
+            option.setTag(states[i]);
+            modes.addView(option, new RadioGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        modes.setOnCheckedChangeListener((group, checkedId) -> {
+            View checked = group.findViewById(checkedId);
+            if (checked == null || checked.getTag() == null) return;
+            if (holder[0] != null) holder[0].dismiss();
+            setAccountHistoryState(selected, (int) checked.getTag());
+        });
+        content.addView(modes, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        holder[0] = new AlertDialog.Builder(this)
+                .setTitle(R.string.history_synchronization)
+                .setView(content)
+                .setPositiveButton(R.string.verify_provider_history,
+                        (selectionDialog, which) -> startHistoryProviderReadback())
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        holder[0].show();
+    }
+
+    private void setAccountHistoryState(Account account, int state) {
+        if (!sameAccount(account, signInService.getSelectedAccount())) return;
+        String fingerprint = accountFingerprint(account);
+        if (fingerprint == null || !getSharedPreferences(ACCOUNT_HISTORY_PREFS, MODE_PRIVATE).edit()
+                .putInt(ACCOUNT_HISTORY_KEY_PREFIX + fingerprint, state).commit()) {
+            Toast.makeText(this, R.string.history_setting_not_saved, Toast.LENGTH_LONG).show();
+            return;
+        }
+        GeneralData.instance(this).setHistoryState(state);
+        if (state == GeneralData.HISTORY_ENABLED) {
+            MediaServiceManager.instance().enableHistory(true);
+        }
+        historyReadback = "not_verified";
+        historyItemCount = -1;
+        startHistoryProviderReadback();
+    }
+
+    private void startHistoryProviderReadback() {
+        Account target = signInService != null ? signInService.getSelectedAccount() : null;
+        if (target == null) {
+            showHistorySyncDialog();
+            return;
+        }
+        final long sequence = ++historyReadbackSequence;
+        if (historyReadbackAction != null) historyReadbackAction.dispose();
+        historyReadback = "verifying";
+        dismissHistoryReadbackProgress();
+        historyReadbackProgressSequence = sequence;
+        historyReadbackProgress = new AlertDialog.Builder(this)
+                .setTitle(R.string.history_synchronization)
+                .setMessage(R.string.history_provider_verifying)
+                .setCancelable(false)
+                .create();
+        historyReadbackProgress.show();
+        YouTubeSignInService.instance().invalidateCache();
+        historyReadbackAction = YouTubeServiceManager.instance().getContentService().getHistoryObserve()
+                .map(group -> group.getMediaItems() != null ? group.getMediaItems().size() : 0)
+                .defaultIfEmpty(0)
+                .timeout(20, TimeUnit.SECONDS)
+                .subscribe(count -> runUi(() -> finishHistoryProviderReadback(sequence, target, count, true)),
+                        error -> runUi(() -> finishHistoryProviderReadback(sequence, target, -1, false)));
+    }
+
+    private void finishHistoryProviderReadback(long sequence, Account target, int count, boolean verified) {
+        if (sequence == historyReadbackProgressSequence) dismissHistoryReadbackProgress();
+        if (sequence != historyReadbackSequence || isFinishing() || isDestroyed()
+                || !sameAccount(target, signInService.getSelectedAccount())) return;
+        historyReadbackAction = null;
+        historyReadback = verified ? "verified" : "failed";
+        historyItemCount = verified ? count : -1;
+        Toast.makeText(this, verified ? R.string.history_provider_verified
+                : R.string.history_provider_failed, Toast.LENGTH_LONG).show();
+        if (selectedSectionId == MediaGroup.TYPE_HISTORY && presenter != null) presenter.refresh();
+        showHistorySyncDialog();
+    }
+
+    private void dismissHistoryReadbackProgress() {
+        if (historyReadbackProgress != null) historyReadbackProgress.dismiss();
+        historyReadbackProgress = null;
+        historyReadbackProgressSequence = 0;
+    }
+
+    private String historyModeLabel(int state) {
+        if (state == GeneralData.HISTORY_ENABLED) return getString(R.string.history_mode_enabled);
+        if (state == GeneralData.HISTORY_DISABLED) return getString(R.string.history_mode_paused);
+        return getString(R.string.history_mode_automatic);
+    }
+
+    private String historyReadbackLabel() {
+        if (TextUtils.equals("verified", historyReadback)) return getString(R.string.account_readback_verified);
+        if (TextUtils.equals("verifying", historyReadback)) return getString(R.string.account_readback_verifying);
+        if (TextUtils.equals("failed", historyReadback)) return getString(R.string.history_provider_failed_short);
+        return getString(R.string.account_readback_not_verified);
     }
 
     private void showAccountSelectionProgress() {
