@@ -150,6 +150,7 @@ public final class WatchActivity extends Activity implements MobilePlaybackServi
         public void onServiceConnected(ComponentName name, IBinder service) {
             playbackService = ((MobilePlaybackService.LocalBinder) service).getService();
             bound = true;
+            playbackService.enterPhonePlaybackMode();
             playerView.setPlayer(playbackService.getPlayer());
             playbackService.getPlayer().addTextOutput(WatchActivity.this);
             playbackService.addListener(WatchActivity.this);

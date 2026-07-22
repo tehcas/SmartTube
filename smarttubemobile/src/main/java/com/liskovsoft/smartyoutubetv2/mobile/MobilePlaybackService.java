@@ -4,17 +4,21 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Binder;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.Process;
 import android.os.SystemClock;
+
 import android.support.v4.media.MediaDescriptionCompat;
+import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
@@ -23,9 +27,12 @@ import android.text.TextUtils;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
+import androidx.media.MediaBrowserServiceCompat;
+import androidx.media.MediaSessionManager;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
 import com.google.android.exoplayer2.DefaultRenderersFactory;
+import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.ExoPlaybackException;
 import com.google.android.exoplayer2.Format;
 import com.google.android.exoplayer2.Player;
@@ -38,6 +45,7 @@ import com.google.android.exoplayer2.trackselection.AdaptiveTrackSelection;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.Parameters;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.SelectionOverride;
+import com.google.android.exoplayer2.trackselection.MappingTrackSelector.MappedTrackInfo;
 import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
 import com.google.android.exoplayer2.decoder.DecoderCounters;
 import com.liskovsoft.mediaserviceinterfaces.data.ChapterItem;
@@ -76,11 +84,13 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.Arrays;
+import java.util.UUID;
 
 import io.reactivex.disposables.Disposable;
 
 /** Owns the mobile ExoPlayer, queue, MediaSession and foreground notification. */
-public final class MobilePlaybackService extends Service implements Player.EventListener,
+public final class MobilePlaybackService extends MediaBrowserServiceCompat implements Player.EventListener,
         MediaServiceManager.AccountChangeListener {
     static final String ACTION_LOAD = "org.smarttube.mobile.action.LOAD";
     static final String ACTION_PLAY = "org.smarttube.mobile.action.PLAY";
@@ -88,6 +98,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
     static final String ACTION_TOGGLE = "org.smarttube.mobile.action.TOGGLE";
     static final String ACTION_NEXT = "org.smarttube.mobile.action.NEXT";
     static final String ACTION_PREVIOUS = "org.smarttube.mobile.action.PREVIOUS";
+    private static final String EXTRA_INTERNAL_COMMAND_TOKEN =
+            "org.smarttube.mobile.extra.INTERNAL_COMMAND_TOKEN";
+    private static final String INTERNAL_COMMAND_TOKEN = UUID.randomUUID().toString();
 
     static final String EXTRA_VIDEO_ID = "video_id";
     static final String EXTRA_TITLE = "title";
@@ -254,6 +267,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         public void run() {
             persistProgress(false);
             checkSponsorSegment();
+            updateSessionState();
             notifyListeners();
             handler.postDelayed(this, 1_000L);
         }
@@ -270,6 +284,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private ExoPlayerInitializer playerInitializer;
     private ExoMediaSourceFactory mediaSourceFactory;
     private MediaSessionCompat mediaSession;
+    private AutomotiveBrowseCatalog automotiveCatalog;
+    private MediaSessionManager mediaSessionManager;
     private Disposable formatInfoAction;
     private Disposable metadataAction;
     private Disposable sponsorSegmentsAction;
@@ -312,11 +328,17 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private String publicRatingState = "disabled";
     private long dislikeRequestSequence;
     private long sleepTimerEndRealtimeMs;
+    private boolean carAudioOnly;
+    private Boolean appliedCarAudioOnly;
+    private int disabledVideoRendererCount;
+    private boolean restartingFromEnded;
+    private boolean foregroundStarted;
 
     static void load(Context context, Video video) {
         MobileSelectionStore.put(video);
         Intent intent = new Intent(context, MobilePlaybackService.class)
                 .setAction(ACTION_LOAD)
+                .putExtra(EXTRA_INTERNAL_COMMAND_TOKEN, INTERNAL_COMMAND_TOKEN)
                 .putExtra(EXTRA_VIDEO_ID, video.videoId)
                 .putExtra(EXTRA_TITLE, video.getTitle())
                 .putExtra(EXTRA_AUTHOR, video.getAuthor())
@@ -329,9 +351,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
         super.onCreate();
         createNotificationChannel();
         initializePlayer();
+        automotiveCatalog = new AutomotiveBrowseCatalog(this);
+        mediaSessionManager = MediaSessionManager.getSessionManager(this);
         initializeMediaSession();
         MediaServiceManager.instance().addAccountListener(this);
-        startForeground(NOTIFICATION_ID, buildNotification());
         handler.post(progressTick);
     }
 
@@ -356,20 +379,134 @@ public final class MobilePlaybackService extends Service implements Player.Event
             @Override public void onSkipToPrevious() { skipPrevious(); }
             @Override public void onSkipToQueueItem(long id) { selectQueueItem((int) id); }
             @Override public void onSeekTo(long position) { seekTo(position); }
+            @Override public void onPlayFromMediaId(String mediaId, Bundle extras) {
+                AutomotiveBrowseCatalog.PlaybackSelection selection =
+                        automotiveCatalog.resolvePlayback(mediaId);
+                if (selection != null) {
+                    playAutomotive(selection);
+                } else {
+                    playbackError = getString(R.string.playback_source_unavailable);
+                    updateSessionState();
+                }
+            }
+            @Override public void onPlayFromSearch(String query, Bundle extras) {
+                playAutomotiveSearch(query);
+            }
+            @Override public void onStop() { pause(); }
         });
         mediaSession.setActive(true);
+        setSessionToken(mediaSession.getSessionToken());
         updateSessionState();
+    }
+
+    private void playAutomotive(AutomotiveBrowseCatalog.PlaybackSelection selection) {
+        AutomotiveBrowseCatalog.Playable item = selection != null ? selection.selected() : null;
+        if (item == null || TextUtils.isEmpty(item.videoId)) return;
+        ensureForeground();
+        carAudioOnly = true;
+        appliedCarAudioOnly = null;
+        if (trackSelector.getCurrentMappedTrackInfo() != null) applyAutomotiveTrackPolicy();
+        queue.clear();
+        for (AutomotiveBrowseCatalog.Playable candidate : selection.queue) {
+            if (candidate != null && !TextUtils.isEmpty(candidate.videoId)) {
+                queue.add(new QueueEntry(candidate.videoId, candidate.title,
+                        candidate.author, candidate.image));
+            }
+        }
+        if (queue.isEmpty()) return;
+        queueIndex = Math.min(selection.selectedIndex, queue.size() - 1);
+        updateSessionQueue();
+        loadQueueIndex(queueIndex, true);
+    }
+
+    void enterPhonePlaybackMode() {
+        if (!carAudioOnly) return;
+        carAudioOnly = false;
+        appliedCarAudioOnly = null;
+        if (trackSelector.getCurrentMappedTrackInfo() != null) applyAutomotiveTrackPolicy();
+        updateSessionMetadata();
+        updateSessionQueue();
+        updateSessionState();
+    }
+
+    private void playAutomotiveSearch(String query) {
+        playbackError = null;
+        long actions = PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID
+                | PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH | PlaybackStateCompat.ACTION_PAUSE
+                | PlaybackStateCompat.ACTION_STOP;
+        mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
+                .setActions(actions)
+                .setState(PlaybackStateCompat.STATE_CONNECTING, 0, 1f)
+                .build());
+        automotiveCatalog.search(query, items -> {
+            AutomotiveBrowseCatalog.PlaybackSelection selection = null;
+            if (items != null) {
+                for (MediaBrowserCompat.MediaItem candidate : items) {
+                    selection = automotiveCatalog.resolvePlayback(candidate.getMediaId());
+                    if (selection != null) break;
+                }
+            }
+            if (selection != null) {
+                playAutomotive(selection);
+            } else {
+                playbackError = getString(R.string.auto_no_results);
+                updateSessionState();
+            }
+        });
+    }
+
+    @Nullable
+    @Override
+    public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
+        if (!isTrustedBrowser(clientPackageName, clientUid)) return null;
+        return new BrowserRoot(AutomotiveBrowseCatalog.ROOT_ID, null);
+    }
+
+    private boolean isTrustedBrowser(String clientPackageName, int clientUid) {
+        if (TextUtils.isEmpty(clientPackageName)) return false;
+        String[] uidPackages = getPackageManager().getPackagesForUid(clientUid);
+        if (uidPackages == null || !Arrays.asList(uidPackages).contains(clientPackageName)) return false;
+        if (getPackageManager().checkSignatures(getPackageName(), clientPackageName)
+                == PackageManager.SIGNATURE_MATCH) return true;
+        return mediaSessionManager.isTrustedForMediaControl(
+                new MediaSessionManager.RemoteUserInfo(clientPackageName, -1, clientUid));
+    }
+
+    @Override
+    public void onLoadChildren(String parentId,
+                               Result<List<MediaBrowserCompat.MediaItem>> result) {
+        if (AutomotiveBrowseCatalog.ROOT_ID.equals(parentId)) {
+            result.sendResult(automotiveCatalog.getRootItems());
+            return;
+        }
+        result.detach();
+        automotiveCatalog.load(parentId, result::sendResult);
+    }
+
+    @Override
+    public void onSearch(String query, Bundle extras,
+                         Result<List<MediaBrowserCompat.MediaItem>> result) {
+        result.detach();
+        automotiveCatalog.search(query, result::sendResult);
     }
 
     @Override
     public int onStartCommand(@Nullable Intent intent, int flags, int startId) {
         if (intent == null || intent.getAction() == null) {
-            updateForegroundNotification();
-            return START_STICKY;
+            return START_NOT_STICKY;
+        }
+        if (!INTERNAL_COMMAND_TOKEN.equals(
+                intent.getStringExtra(EXTRA_INTERNAL_COMMAND_TOKEN))) {
+            stopSelfResult(startId);
+            return START_NOT_STICKY;
         }
 
         switch (intent.getAction()) {
             case ACTION_LOAD:
+                ensureForeground();
+                carAudioOnly = false;
+                appliedCarAudioOnly = null;
+                if (trackSelector.getCurrentMappedTrackInfo() != null) applyAutomotiveTrackPolicy();
                 handleLoad(intent);
                 break;
             case ACTION_PLAY:
@@ -390,7 +527,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
             default:
                 break;
         }
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     private void handleLoad(Intent intent) {
@@ -540,7 +677,12 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     private void onFormatError(Throwable error) {
-        playbackError = error != null && !TextUtils.isEmpty(error.getMessage())
+        if (carAudioOnly && hasNext()) {
+            skipNext();
+            return;
+        }
+        playbackError = carAudioOnly ? getString(R.string.playback_source_unavailable)
+                : error != null && !TextUtils.isEmpty(error.getMessage())
                 ? error.getMessage() : getString(R.string.playback_source_unavailable);
         player.setPlayWhenReady(false);
         updateSessionState();
@@ -549,7 +691,13 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     void play() {
-        if (player != null) player.setPlayWhenReady(true);
+        if (player != null) {
+            if (player.getPlaybackState() == Player.STATE_ENDED) {
+                restartingFromEnded = true;
+                player.seekTo(0);
+            }
+            player.setPlayWhenReady(true);
+        }
         updateSessionState();
         updateForegroundNotification();
         notifyListeners();
@@ -607,7 +755,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     SimpleExoPlayer getPlayer() { return player; }
-    boolean isPlaying() { return player != null && player.getPlayWhenReady(); }
+    boolean isPlaying() {
+        return player != null && player.getPlayWhenReady()
+                && player.getPlaybackState() != Player.STATE_ENDED;
+    }
     boolean hasNext() { return queueIndex >= 0 && queueIndex + 1 < queue.size(); }
     boolean hasPrevious() { return queueIndex > 0; }
     int getQueueIndex() { return queueIndex; }
@@ -1071,6 +1222,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     void selectVideoTrack(TrackOption option) {
+        if (carAudioOnly) return;
         selectTrack(option);
     }
 
@@ -1170,7 +1322,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
     private void updateSessionMetadata() {
         if (currentVideo == null) return;
         MediaMetadataCompat metadata = new MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, currentVideo.videoId)
+                .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID,
+                        carAudioOnly ? automotiveQueueMediaId(queueIndex) : currentVideo.videoId)
                 .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentVideo.getTitle())
                 .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentVideo.getAuthor())
                 .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, currentVideo.getCardImageUrl())
@@ -1185,7 +1338,7 @@ public final class MobilePlaybackService extends Service implements Player.Event
         for (int i = 0; i < queue.size(); i++) {
             QueueEntry entry = queue.get(i);
             MediaDescriptionCompat.Builder builder = new MediaDescriptionCompat.Builder()
-                    .setMediaId(entry.videoId)
+                    .setMediaId(carAudioOnly ? automotiveQueueMediaId(i) : entry.videoId)
                     .setTitle(entry.title)
                     .setSubtitle(entry.author);
             if (!TextUtils.isEmpty(entry.image)) builder.setIconUri(Uri.parse(entry.image));
@@ -1194,6 +1347,10 @@ public final class MobilePlaybackService extends Service implements Player.Event
         }
         mediaSession.setQueue(sessionQueue);
         mediaSession.setQueueTitle(getString(R.string.playback_queue));
+    }
+
+    private String automotiveQueueMediaId(int index) {
+        return "auto:queue:item:" + Math.max(0, index);
     }
 
     private void updateSessionState() {
@@ -1207,12 +1364,20 @@ public final class MobilePlaybackService extends Service implements Player.Event
 
         long actions = PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
                 | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_SEEK_TO
-                | PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM;
+                | PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM
+                | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID
+                | PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH | PlaybackStateCompat.ACTION_STOP;
         if (hasNext()) actions |= PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
         if (currentVideo != null) actions |= PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS;
+        long positionMs = getPositionMs();
+        long durationMs = getDurationMs();
+        if (player != null && player.getPlaybackState() == Player.STATE_ENDED && durationMs > 0) {
+            positionMs = Math.min(positionMs, durationMs);
+        }
+        float sessionSpeed = state == PlaybackStateCompat.STATE_PLAYING ? getPlaybackSpeed() : 0f;
         PlaybackStateCompat.Builder builder = new PlaybackStateCompat.Builder()
                 .setActions(actions)
-                .setState(state, getPositionMs(), getPlaybackSpeed())
+                .setState(state, positionMs, sessionSpeed)
                 .setActiveQueueItemId(queueIndex >= 0
                         ? queueIndex : MediaSessionCompat.QueueItem.UNKNOWN_ID);
         if (playbackError != null) builder.setErrorMessage(playbackError);
@@ -1253,7 +1418,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
 
     private PendingIntent serviceAction(String action, int requestCode) {
         return PendingIntent.getService(this, requestCode,
-                new Intent(this, MobilePlaybackService.class).setAction(action), pendingIntentFlags());
+                new Intent(this, MobilePlaybackService.class).setAction(action)
+                        .putExtra(EXTRA_INTERNAL_COMMAND_TOKEN, INTERNAL_COMMAND_TOKEN),
+                pendingIntentFlags());
     }
 
     private int pendingIntentFlags() {
@@ -1263,14 +1430,29 @@ public final class MobilePlaybackService extends Service implements Player.Event
     }
 
     private void updateForegroundNotification() {
+        if (!foregroundStarted) return;
         updateSessionState();
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         manager.notify(NOTIFICATION_ID, buildNotification());
     }
 
+    private void ensureForeground() {
+        if (foregroundStarted) return;
+        foregroundStarted = true;
+        startForeground(NOTIFICATION_ID, buildNotification());
+    }
+
     @Override
     public void onPlayerStateChanged(boolean playWhenReady, int playbackState) {
-        if (playbackState == Player.STATE_ENDED && hasNext()) skipNext();
+        if (playbackState == Player.STATE_ENDED) {
+            if (hasNext()) {
+                skipNext();
+            } else if (!restartingFromEnded && player != null && player.getPlayWhenReady()) {
+                player.setPlayWhenReady(false);
+            }
+        } else {
+            restartingFromEnded = false;
+        }
         updateSessionMetadata();
         updateForegroundNotification();
         notifyListeners();
@@ -1280,17 +1462,37 @@ public final class MobilePlaybackService extends Service implements Player.Event
     public void onTracksChanged(TrackGroupArray trackGroups, TrackSelectionArray trackSelections) {
         if (trackSelectorManager == null || trackSelector == null
                 || trackSelector.getCurrentMappedTrackInfo() == null) return;
+        applyAutomotiveTrackPolicy();
         trackSelectorManager.invalidate();
         if (!restoredTrackPreferences) {
             restoredTrackPreferences = true;
             PlayerData data = PlayerData.instance(this);
             FormatItem video = data.getFormat(FormatItem.TYPE_VIDEO);
             FormatItem subtitle = data.getFormat(FormatItem.TYPE_SUBTITLE);
-            if (video != null) trackSelectorManager.selectTrack(FormatItem.toMediaTrack(video));
+            if (!carAudioOnly && video != null) trackSelectorManager.selectTrack(FormatItem.toMediaTrack(video));
             if (subtitle != null) trackSelectorManager.selectTrack(FormatItem.toMediaTrack(subtitle));
         }
         refreshTrackOptions();
         notifyListeners();
+    }
+
+    private void applyAutomotiveTrackPolicy() {
+        if (appliedCarAudioOnly != null && appliedCarAudioOnly == carAudioOnly) return;
+        appliedCarAudioOnly = carAudioOnly;
+        MappedTrackInfo info = trackSelector.getCurrentMappedTrackInfo();
+        DefaultTrackSelector.ParametersBuilder builder = trackSelector.buildUponParameters();
+        disabledVideoRendererCount = 0;
+        for (int i = 0; i < info.getRendererCount(); i++) {
+            if (info.getRendererType(i) == C.TRACK_TYPE_VIDEO) {
+                builder.setRendererDisabled(i, carAudioOnly);
+                if (carAudioOnly) disabledVideoRendererCount++;
+            }
+        }
+        trackSelector.setParameters(builder);
+        Bundle extras = new Bundle();
+        extras.putBoolean("smarttube.automotive.audio_only", carAudioOnly);
+        extras.putInt("smarttube.automotive.video_renderers_disabled", disabledVideoRendererCount);
+        mediaSession.setExtras(extras);
     }
 
     @Override
@@ -1308,7 +1510,8 @@ public final class MobilePlaybackService extends Service implements Player.Event
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
-        return binder;
+        if (SERVICE_INTERFACE.equals(intent.getAction())) return super.onBind(intent);
+        return Binder.getCallingUid() == Process.myUid() ? binder : null;
     }
 
     @Override
@@ -1330,7 +1533,9 @@ public final class MobilePlaybackService extends Service implements Player.Event
         RxHelper.disposeActions(deArrowAction);
         RxHelper.disposeActions(suggestionDeArrowAction);
         RxHelper.disposeActions(dislikeDataAction);
+        if (automotiveCatalog != null) automotiveCatalog.release();
         listeners.clear();
+        if (foregroundStarted) stopForeground(true);
         if (mediaSession != null) {
             mediaSession.setActive(false);
             mediaSession.release();

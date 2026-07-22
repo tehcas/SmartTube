@@ -34,7 +34,15 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.SmartTube.Mobile"
+        tools:ignore="MissingIntentFilterForMediaSearch"
         tools:replace="android:theme">
+
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.TintableAttributionIcon"
+            android:resource="@drawable/ic_auto_attribution" />
 
         <activity
             android:name=".MainActivity"
@@ -70,9 +78,14 @@
 
         <service
             android:name=".MobilePlaybackService"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="mediaPlayback"
-            android:stopWithTask="false" />
+            android:stopWithTask="false"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
 
         <activity
             android:name="com.liskovsoft.leanbackassistant.search.SearchableActivity"
