@@ -416,7 +416,7 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
         if (queue.isEmpty()) return;
         queueIndex = Math.min(selection.selectedIndex, queue.size() - 1);
         updateSessionQueue();
-        loadQueueIndex(queueIndex, true);
+        loadQueueIndex(queueIndex, QueueTransitionPolicy.Reason.EXPLICIT_OPEN);
     }
 
     void enterPhonePlaybackMode() {
@@ -549,7 +549,7 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
             selected.cardImageUrl = intent.getStringExtra(EXTRA_IMAGE);
         }
         buildQueue(selected);
-        loadQueueIndex(queueIndex, true);
+        loadQueueIndex(queueIndex, QueueTransitionPolicy.Reason.EXPLICIT_OPEN);
     }
 
     private void buildQueue(Video selected) {
@@ -572,8 +572,9 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
         updateSessionQueue();
     }
 
-    private void loadQueueIndex(int index, boolean restoreProgress) {
+    private void loadQueueIndex(int index, QueueTransitionPolicy.Reason reason) {
         if (index < 0 || index >= queue.size()) return;
+        boolean restoreProgress = QueueTransitionPolicy.shouldRestoreProgress(reason);
         persistProgress(true);
         queueIndex = index;
         QueueEntry entry = queue.get(index);
@@ -718,20 +719,22 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
     }
 
     void skipNext() {
-        if (queueIndex + 1 < queue.size()) loadQueueIndex(queueIndex + 1, true);
+        if (queueIndex + 1 < queue.size()) {
+            loadQueueIndex(queueIndex + 1, QueueTransitionPolicy.Reason.QUEUE_ADVANCE);
+        }
     }
 
     void skipPrevious() {
         if (player != null && player.getCurrentPosition() > 5_000L) {
             seekTo(0);
         } else if (queueIndex > 0) {
-            loadQueueIndex(queueIndex - 1, true);
+            loadQueueIndex(queueIndex - 1, QueueTransitionPolicy.Reason.QUEUE_ADVANCE);
         }
     }
 
     void selectQueueItem(int index) {
         if (index >= 0 && index < queue.size() && index != queueIndex) {
-            loadQueueIndex(index, true);
+            loadQueueIndex(index, QueueTransitionPolicy.Reason.QUEUE_ADVANCE);
         }
     }
 
@@ -932,7 +935,7 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
         for (SuggestionOption option : suggestions) queue.add(option.toQueueEntry());
         queueIndex = index;
         updateSessionQueue();
-        loadQueueIndex(index, false);
+        loadQueueIndex(index, QueueTransitionPolicy.Reason.QUEUE_ADVANCE);
     }
 
     private void onMetadataLoaded(MediaItemMetadata metadata) {
