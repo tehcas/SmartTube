@@ -47,6 +47,7 @@ import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.Paramet
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.SelectionOverride;
 import com.google.android.exoplayer2.trackselection.MappingTrackSelector.MappedTrackInfo;
 import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
+import com.google.android.exoplayer2.upstream.HttpDataSource;
 import com.google.android.exoplayer2.decoder.DecoderCounters;
 import com.liskovsoft.mediaserviceinterfaces.data.ChapterItem;
 import com.liskovsoft.mediaserviceinterfaces.data.DeArrowData;
@@ -74,6 +75,7 @@ import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
+import com.liskovsoft.youtubeapi.service.YouTubeMediaItemService;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import java.util.ArrayList;
@@ -292,6 +294,8 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
     private Disposable deArrowAction;
     private Disposable suggestionDeArrowAction;
     private Disposable dislikeDataAction;
+    private int sourceRefreshAttempts;
+    private boolean sourceResolving;
     private int queueIndex = -1;
     private Video currentVideo;
     private String playbackError;
@@ -574,6 +578,8 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
 
     private void loadQueueIndex(int index, QueueTransitionPolicy.Reason reason) {
         if (index < 0 || index >= queue.size()) return;
+        sourceRefreshAttempts = 0;
+        sourceResolving = true;
         boolean restoreProgress = QueueTransitionPolicy.shouldRestoreProgress(reason);
         persistProgress(true);
         queueIndex = index;
@@ -667,6 +673,7 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
         }
 
         applyPlaybackSpeed(PlayerData.instance(this).getSpeed(currentVideo.channelId), false);
+        sourceResolving = false;
         player.prepare(source);
         if (restoreProgress) {
             VideoStateService.State state = VideoStateService.instance(this).getByVideoId(currentVideo.videoId);
@@ -678,10 +685,17 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
     }
 
     private void onFormatError(Throwable error) {
-        if (carAudioOnly && hasNext()) {
+        SourceRecoveryPolicy.Action recovery = SourceRecoveryPolicy.decide(
+                carAudioOnly, hasNext(), sourceRefreshAttempts, isExpiredSourceFailure(error));
+        if (recovery == SourceRecoveryPolicy.Action.REFRESH_CURRENT) {
+            refreshCurrentSource();
+            return;
+        }
+        if (recovery == SourceRecoveryPolicy.Action.SKIP_NEXT) {
             skipNext();
             return;
         }
+        sourceResolving = false;
         playbackError = carAudioOnly ? getString(R.string.playback_source_unavailable)
                 : error != null && !TextUtils.isEmpty(error.getMessage())
                 ? error.getMessage() : getString(R.string.playback_source_unavailable);
@@ -689,6 +703,38 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
         updateSessionState();
         updateForegroundNotification();
         notifyListeners();
+    }
+
+    private void refreshCurrentSource() {
+        if (currentVideo == null || TextUtils.isEmpty(currentVideo.videoId)) return;
+        sourceRefreshAttempts++;
+        sourceResolving = true;
+        playbackError = null;
+        sourceType = "refreshing expired source";
+        updateSessionState();
+        updateForegroundNotification();
+        notifyListeners();
+        YouTubeMediaItemService.instance().invalidateCache();
+        RxHelper.disposeActions(formatInfoAction);
+        formatInfoAction = YouTubeServiceManager.instance()
+                .getMediaItemService()
+                .getFormatInfoObserve(currentVideo.videoId)
+                .subscribe(info -> openFormatInfo(info, false), this::onFormatError);
+    }
+
+    private boolean isExpiredSourceFailure(Throwable error) {
+        if (!(error instanceof ExoPlaybackException)) return false;
+        ExoPlaybackException playbackException = (ExoPlaybackException) error;
+        if (playbackException.type != ExoPlaybackException.TYPE_SOURCE) return false;
+        Throwable cause = playbackException.getSourceException();
+        while (cause != null) {
+            if (cause instanceof HttpDataSource.InvalidResponseCodeException
+                    && ((HttpDataSource.InvalidResponseCodeException) cause).responseCode == 403) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
     }
 
     void play() {
@@ -1360,6 +1406,7 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
         if (mediaSession == null) return;
         int state;
         if (playbackError != null) state = PlaybackStateCompat.STATE_ERROR;
+        else if (sourceResolving) state = PlaybackStateCompat.STATE_BUFFERING;
         else if (player == null || player.getPlaybackState() == Player.STATE_IDLE) state = PlaybackStateCompat.STATE_NONE;
         else if (player.getPlaybackState() == Player.STATE_BUFFERING) state = PlaybackStateCompat.STATE_BUFFERING;
         else if (isPlaying()) state = PlaybackStateCompat.STATE_PLAYING;
@@ -1372,7 +1419,7 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
                 | PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH | PlaybackStateCompat.ACTION_STOP;
         if (hasNext()) actions |= PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
         if (currentVideo != null) actions |= PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS;
-        long positionMs = getPositionMs();
+        long positionMs = sourceResolving ? 0 : getPositionMs();
         long durationMs = getDurationMs();
         if (player != null && player.getPlaybackState() == Player.STATE_ENDED && durationMs > 0) {
             positionMs = Math.min(positionMs, durationMs);
