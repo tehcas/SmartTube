@@ -75,7 +75,7 @@ import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
-import com.liskovsoft.youtubeapi.service.YouTubeMediaItemService;
+import com.liskovsoft.youtubeapi.service.internal.FormatInfoWrapper;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
 
 import java.util.ArrayList;
@@ -714,7 +714,7 @@ public final class MobilePlaybackService extends MediaBrowserServiceCompat imple
         updateSessionState();
         updateForegroundNotification();
         notifyListeners();
-        YouTubeMediaItemService.instance().invalidateCache();
+        FormatInfoWrapper.invalidateCache();
         RxHelper.disposeActions(formatInfoAction);
         formatInfoAction = YouTubeServiceManager.instance()
                 .getMediaItemService()
